@@ -24,17 +24,17 @@ func dash(intervals []float32, phase float32) *PathEffectSpec {
 func init() {
 	reg("dash-caps", func(c Canvas) {
 		c.Clear(white)
-		for i, cap := range []StrokeCap{CapButt, CapRound, CapSquare} {
+		for i, kind := range []StrokeCap{CapButt, CapRound, CapSquare} {
 			p := Stroke(blue, 12)
-			p.Cap = cap
+			p.Cap = kind
 			p.PathEffect = dash([]float32{24, 16}, 0)
 			y := 36 + float32(i)*40
 			c.DrawLine(20, y, 236, y, p)
 		}
 		// The same caps on a hairline dash.
-		for i, cap := range []StrokeCap{CapButt, CapRound, CapSquare} {
+		for i, kind := range []StrokeCap{CapButt, CapRound, CapSquare} {
 			p := Stroke(red, 0)
-			p.Cap = cap
+			p.Cap = kind
 			p.PathEffect = dash([]float32{10, 6}, 0)
 			y := 176 + float32(i)*24
 			c.DrawLine(20, y, 236, y, p)
@@ -265,9 +265,9 @@ func init() {
 	reg("stroke-degenerate", func(c Canvas) {
 		c.Clear(white)
 		// Zero-length segments under each cap: butt draws nothing, round a dot, square a square.
-		for i, cap := range []StrokeCap{CapButt, CapRound, CapSquare} {
+		for i, kind := range []StrokeCap{CapButt, CapRound, CapSquare} {
 			p := Stroke(black, 20)
-			p.Cap = cap
+			p.Cap = kind
 			x := 52 + float32(i)*76
 			c.DrawPath(NewPathSpec().MoveTo(x, 40).LineTo(x, 40), p)
 		}

@@ -84,9 +84,9 @@ func init() {
 
 	reg("line-caps", func(c Canvas) {
 		c.Clear(white)
-		for i, cap := range []StrokeCap{CapButt, CapRound, CapSquare} {
+		for i, kind := range []StrokeCap{CapButt, CapRound, CapSquare} {
 			p := Stroke(black, 16)
-			p.Cap = cap
+			p.Cap = kind
 			y := 40 + float32(i)*40
 			c.DrawLine(30, y, 226, y, p)
 		}
