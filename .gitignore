@@ -9,3 +9,4 @@ gltmp/
 # Mesa3D llvmpipe drop-in fetched for the Windows GPU oracle (provisioned in CI, downloaded locally).
 /mesa
 /mesa.7z
+/redundant-tests.md
