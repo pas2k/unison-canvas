@@ -72,50 +72,52 @@ func TestStrokeIterVerbClassification(t *testing.T) {
 func TestStrokeIteratorClosedContour(t *testing.T) {
 	identity := geom.IdentityMatrix()
 	rec := strokeRec(4, stroke.CapButt, stroke.JoinMiter, 4)
+	for _, tc := range []struct {
+		name         string
+		want         []strokeIterVerb
+		wantFirstPts []geom.Point
+		last         geom.Point // the contour's last point before the close
+	}{
+		{
+			// The first verb is deferred and repeated at the end as "current"; the close injects a line back to the
+			// start. Current strokes in order: line2 (50,10 -> 50,50), close line (50,50 -> 10,10), repeated line1
+			// (10,10 -> 50,10).
+			name: "close-injects-line",
+			last: geom.Point{X: 50, Y: 50},
+			want: []strokeIterVerb{
+				strokeIterVerbLine, strokeIterVerbLine, strokeIterVerbLine,
+				strokeIterVerbContourFinished,
+			},
+			wantFirstPts: []geom.Point{{X: 50, Y: 10}, {X: 50, Y: 50}, {X: 10, Y: 10}},
+		},
+		{
+			// When the contour already ends at its start point, the close must not inject a line.
+			name: "already-closed",
+			last: geom.Point{X: 10, Y: 10},
+			want: []strokeIterVerb{
+				strokeIterVerbLine, strokeIterVerbLine,
+				strokeIterVerbContourFinished,
+			},
+		},
+	} {
+		p := &path.Path{}
+		p.MoveTo(10, 10).LineTo(50, 10).LineTo(tc.last.X, tc.last.Y).Close()
 
-	p := &path.Path{}
-	p.MoveTo(10, 10).LineTo(50, 10).LineTo(50, 50).Close()
-
-	it := newStrokeIterator(p, &rec, &identity)
-	verbs, firstPts := collectStrokeIter(it)
-
-	// The first verb is deferred and repeated at the end as "current"; the close injects a line back to the start.
-	want := []strokeIterVerb{
-		strokeIterVerbLine, strokeIterVerbLine, strokeIterVerbLine,
-		strokeIterVerbContourFinished,
-	}
-	if len(verbs) != len(want) {
-		t.Fatalf("verbs = %v, want %v", verbs, want)
-	}
-	for i := range want {
-		if verbs[i] != want[i] {
-			t.Fatalf("verb %d = %v, want %v", i, verbs[i], want[i])
+		verbs, firstPts := collectStrokeIter(newStrokeIterator(p, &rec, &identity))
+		if len(verbs) != len(tc.want) {
+			t.Fatalf("%s: verbs = %v, want %v", tc.name, verbs, tc.want)
 		}
-	}
-	// Current strokes in order: line2 (50,10 -> 50,50), close line (50,50 -> 10,10), repeated line1 (10,10 -> 50,10).
-	if firstPts[0] != (geom.Point{X: 50, Y: 10}) ||
-		firstPts[1] != (geom.Point{X: 50, Y: 50}) ||
-		firstPts[2] != (geom.Point{X: 10, Y: 10}) {
-		t.Fatalf("first points = %v", firstPts[:3])
-	}
-}
-
-func TestStrokeIteratorAlreadyClosedContour(t *testing.T) {
-	// When the contour already ends at its start point, the close must not inject a line.
-	identity := geom.IdentityMatrix()
-	rec := strokeRec(4, stroke.CapButt, stroke.JoinMiter, 4)
-
-	p := &path.Path{}
-	p.MoveTo(10, 10).LineTo(50, 10).LineTo(10, 10).Close()
-
-	it := newStrokeIterator(p, &rec, &identity)
-	verbs, _ := collectStrokeIter(it)
-	want := []strokeIterVerb{
-		strokeIterVerbLine, strokeIterVerbLine,
-		strokeIterVerbContourFinished,
-	}
-	if len(verbs) != len(want) {
-		t.Fatalf("verbs = %v, want %v", verbs, want)
+		for i := range tc.want {
+			if verbs[i] != tc.want[i] {
+				t.Fatalf("%s: verb %d = %v, want %v", tc.name, i, verbs[i], tc.want[i])
+			}
+		}
+		for i, want := range tc.wantFirstPts {
+			if firstPts[i] != want {
+				t.Fatalf("%s: first points = %v, want %v", tc.name, firstPts[:len(tc.wantFirstPts)],
+					tc.wantFirstPts)
+			}
+		}
 	}
 }
 

@@ -22,35 +22,38 @@ func mkCubic(pts [4]dPoint) dCubic {
 	return c
 }
 
-// TestCubicConvexHullSquare verifies the four-point hull of a convex-quadrilateral cubic.
-func TestCubicConvexHullSquare(t *testing.T) {
-	c := mkCubic(cu4(0, 0, 0, 1, 1, 1, 1, 0))
-	var order [4]int
-	if got := c.convexHull(&order); got != 4 {
-		t.Fatalf("convexHull count=%d, want 4", got)
-	}
-	seen := [4]bool{}
-	for _, o := range order {
-		if o < 0 || o > 3 || seen[o] {
-			t.Fatalf("convexHull order not a permutation: %v", order)
+// TestCubicConvexHull verifies the hull point count, and that a four-point hull's order is a permutation.
+func TestCubicConvexHull(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		c    dCubic
+		want int
+	}{
+		// A convex-quadrilateral cubic has a four-point hull.
+		{name: "square", c: mkCubic(cu4(0, 0, 0, 1, 1, 1, 1, 0)), want: 4},
+		// (0,0),(4,0),(0,4) form a triangle; (1,1) is strictly inside it.
+		{name: "triangle", c: mkCubic(cu4(0, 0, 4, 0, 0, 4, 1, 1)), want: 3},
+	} {
+		var order [4]int
+		got := tc.c.convexHull(&order)
+		if got != tc.want {
+			t.Fatalf("%s: convexHull count=%d, want %d", tc.name, got, tc.want)
 		}
-		seen[o] = true
-	}
-}
-
-// TestCubicConvexHullTriangle verifies a three-point hull when a control point lies inside the triangle of the other
-// three.
-func TestCubicConvexHullTriangle(t *testing.T) {
-	// (0,0),(4,0),(0,4) form a triangle; (1,1) is strictly inside it.
-	c := mkCubic(cu4(0, 0, 4, 0, 0, 4, 1, 1))
-	var order [4]int
-	if got := c.convexHull(&order); got != 3 {
-		t.Fatalf("convexHull count=%d, want 3", got)
+		if got != 4 {
+			continue
+		}
+		seen := [4]bool{}
+		for _, o := range order {
+			if o < 0 || o > 3 || seen[o] {
+				t.Fatalf("%s: convexHull order not a permutation: %v", tc.name, order)
+			}
+			seen[o] = true
+		}
 	}
 }
 
 // TestCubicSubDivideInvariant verifies the subdivision invariant: sub over [t1,t2] at s equals the parent at t1 +
-// s*(t2-t1). This exercises both the chopAt lanes (t1==0 / t2==1) and the general lane.
+// s*(t2-t1). This exercises both the chopAt lanes (t1==0 / t2==1, at t=0.5 and elsewhere) and the general lane.
 func TestCubicSubDivideInvariant(t *testing.T) {
 	cubics := []dCubic{
 		mkCubic(cu4(0, 0, 0, 1, 1, 1, 1, 0)),
@@ -59,7 +62,7 @@ func TestCubicSubDivideInvariant(t *testing.T) {
 		mkCubic(cu4(945.08099365234375, 747.1619873046875, 982.5679931640625, 747.1619873046875,
 			1013.6290283203125, 719.656005859375, 1019.1910400390625, 683.72601318359375)),
 	}
-	ranges := [][2]float64{{0, 1}, {0, 0.5}, {0.5, 1}, {0.25, 0.75}, {0.3, 0.6}}
+	ranges := [][2]float64{{0, 1}, {0, 0.5}, {0.5, 1}, {0, 0.3}, {0.3, 1}, {0, 0.9}, {0.9, 1}, {0.25, 0.75}, {0.3, 0.6}}
 	samples := []float64{0, 0.25, 0.5, 0.75, 1}
 	for ci, c := range cubics {
 		for _, r := range ranges {
@@ -72,30 +75,6 @@ func TestCubicSubDivideInvariant(t *testing.T) {
 					t.Fatalf("cubic[%d] subDivide(%g,%g) at s=%g: got (%g,%g) want (%g,%g)",
 						ci, t1, t2, s, got.x, got.y, want.x, want.y)
 				}
-			}
-		}
-	}
-}
-
-// TestCubicChopAtInvariant verifies chopAt(t): first over [0,t], second over [t,1].
-func TestCubicChopAtInvariant(t *testing.T) {
-	c := mkCubic(cu4(0, 1, 4, 5, 1, 0, 5, 3))
-	for _, chopT := range []float64{0.5, 0.3, 0.9} {
-		pair := c.chopAt(chopT)
-		first := pair.first()
-		second := pair.second()
-		for _, s := range []float64{0, 0.5, 1} {
-			gotFirst := first.ptAtT(s)
-			wantFirst := c.ptAtT(s * chopT)
-			if !gotFirst.approximatelyEqual(wantFirst) {
-				t.Fatalf("chopAt(%g) first at s=%g: got (%g,%g) want (%g,%g)",
-					chopT, s, gotFirst.x, gotFirst.y, wantFirst.x, wantFirst.y)
-			}
-			gotSecond := second.ptAtT(s)
-			wantSecond := c.ptAtT(chopT + s*(1-chopT))
-			if !gotSecond.approximatelyEqual(wantSecond) {
-				t.Fatalf("chopAt(%g) second at s=%g: got (%g,%g) want (%g,%g)",
-					chopT, s, gotSecond.x, gotSecond.y, wantSecond.x, wantSecond.y)
 			}
 		}
 	}

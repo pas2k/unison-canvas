@@ -47,6 +47,7 @@ func TestPolyToPoly2MapsBothPoints(t *testing.T) {
 	for _, tc := range []struct {
 		name                   string
 		src0, src1, dst0, dst1 geom.Point
+		fails                  bool
 	}{
 		{name: "identity", src0: geom.Point{}, src1: unitX, dst0: geom.Point{}, dst1: unitX},
 		{name: "focal-normalize", src0: geom.Point{X: 0.25}, src1: unitX, dst0: geom.Point{}, dst1: unitX},
@@ -58,8 +59,20 @@ func TestPolyToPoly2MapsBothPoints(t *testing.T) {
 			name: "rotate-and-scale", src0: geom.Point{X: -3, Y: 4}, src1: geom.Point{X: 5, Y: 4},
 			dst0: geom.Point{X: 7, Y: 7}, dst1: geom.Point{X: 7, Y: -9},
 		},
+		// A zero-length src pair (whose poly2 half is singular) reports failure rather than returning a garbage
+		// matrix — the path focalData.set turns into a nil shader.
+		{
+			name: "zero-length-src", src0: geom.Point{X: 4, Y: 9}, src1: geom.Point{X: 4, Y: 9},
+			dst0: geom.Point{}, dst1: unitX, fails: true,
+		},
 	} {
 		m, ok := polyToPoly2(tc.src0, tc.src1, tc.dst0, tc.dst1)
+		if tc.fails {
+			if ok {
+				t.Errorf("%s: expected polyToPoly2 to fail", tc.name)
+			}
+			continue
+		}
 		if !ok {
 			t.Errorf("%s: polyToPoly2 failed", tc.name)
 			continue
@@ -70,15 +83,6 @@ func TestPolyToPoly2MapsBothPoints(t *testing.T) {
 		if got := m.MapPoint(tc.src1); !nearPoint(got, tc.dst1) {
 			t.Errorf("%s: src1 mapped to %v, want %v", tc.name, got, tc.dst1)
 		}
-	}
-}
-
-// TestPolyToPoly2RejectsDegenerateSrc locks that a zero-length src pair (whose poly2 half is singular) reports failure
-// rather than returning a garbage matrix — the path focalData.set turns into a nil shader.
-func TestPolyToPoly2RejectsDegenerateSrc(t *testing.T) {
-	p := geom.Point{X: 4, Y: 9}
-	if _, ok := polyToPoly2(p, p, geom.Point{}, geom.Point{X: 1}); ok {
-		t.Fatal("expected polyToPoly2 to fail for a zero-length src pair")
 	}
 }
 

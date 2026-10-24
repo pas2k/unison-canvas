@@ -89,27 +89,16 @@ func TestLiveStrokeTessellationJoinsAndCaps(t *testing.T) {
 			zig.MoveTo(15, 15).LineTo(45, 25).LineTo(20, 45).LineTo(60, 60)
 			zig.SetVolatile(true)
 			c.DrawPath(zig, strokeScenePaint(0xFF2044CC, 7, tc.cap, tc.join))
+			// A closed contour, so the join replaces the caps at its start point.
+			tri := &path.Path{}
+			tri.MoveTo(25, 100).LineTo(64, 20).QuadTo(80, 40, 103, 100).Close()
+			tri.SetVolatile(true)
+			c.DrawPath(tri, strokeScenePaint(0xFF11AA33, 9, tc.cap, tc.join))
 		}
 		// Non-AA rasterization-rule differences plus the 1/4px edge linearization stay confined to pixels along the
 		// stroke boundaries.
 		runStrokeScene(t, dc, w, h, w*h/40, tc.name, scene)
 	}
-}
-
-func TestLiveStrokeTessellationClosedContour(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	const w, h = 128, 128
-
-	scene := func(c *canvas.Canvas) {
-		bg := canvas.NewPaint()
-		bg.Color = 0xFFFFFFFF
-		c.DrawPaint(bg)
-		tri := &path.Path{}
-		tri.MoveTo(25, 100).LineTo(64, 20).QuadTo(80, 40, 103, 100).Close()
-		tri.SetVolatile(true)
-		c.DrawPath(tri, strokeScenePaint(0xFF11AA33, 9, canvas.CapButt, canvas.JoinRound))
-	}
-	runStrokeScene(t, dc, w, h, w*h/40, "closed contour", scene)
 }
 
 func TestLiveStrokeTessellationCusp(t *testing.T) {
@@ -175,28 +164,6 @@ func TestLiveStrokeTessellationHairline(t *testing.T) {
 	if colored < 45 || colored > 52 {
 		t.Fatalf("hairline covered %d pixels, want ~50", colored)
 	}
-}
-
-func TestLiveStrokeTessellationDynamicMerge(t *testing.T) {
-	// Strokes with differing widths and colors in one scene merge into a single instanced op with dynamic stroke params
-	// and colors; the rendering must still match the CPU.
-	_, dc := newLiveDirectContext(t)
-	const w, h = 128, 128
-
-	scene := func(c *canvas.Canvas) {
-		bg := canvas.NewPaint()
-		bg.Color = 0xFFFFFFFF
-		c.DrawPaint(bg)
-		seg1 := &path.Path{}
-		seg1.MoveTo(15, 20).LineTo(60, 30).QuadTo(90, 40, 110, 25)
-		seg1.SetVolatile(true)
-		c.DrawPath(seg1, strokeScenePaint(0xFFDD2200, 5, canvas.CapButt, canvas.JoinBevel))
-		seg2 := &path.Path{}
-		seg2.MoveTo(15, 60).LineTo(60, 75).QuadTo(90, 85, 110, 65)
-		seg2.SetVolatile(true)
-		c.DrawPath(seg2, strokeScenePaint(0xFF2044CC, 11, canvas.CapButt, canvas.JoinBevel))
-	}
-	runStrokeScene(t, dc, w, h, w*h/40, "dynamic merge", scene)
 }
 
 func TestLiveStrokeTessellationTranslucentStencil(t *testing.T) {

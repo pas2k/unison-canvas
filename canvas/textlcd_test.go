@@ -112,6 +112,16 @@ func TestLCDTextEndToEnd(t *testing.T) {
 		t.Errorf("LCD ink pixels = %d, implausibly low", ink)
 	}
 
+	// A gradient-shaded srcOver paint takes the shader blitter LCD lanes and keeps the fringing.
+	shaded := renderLCDText(t, rgbh, font.EdgingSubpixelAntiAlias, func(_ *Canvas, p *Paint) (*Paint, bool) {
+		p.Shader = shaders.NewLinearGradient(geom.Point{X: 0, Y: 0}, geom.Point{X: 200, Y: 0},
+			[]colorcore.Color{0xFFFF0000, 0xFF0000FF}, nil, shaders.TileClamp, nil)
+		return p, false
+	})
+	if f := fringePixels(shaded); f == 0 {
+		t.Error("shader-painted LCD text has no fringing")
+	}
+
 	// The BGR geometry swaps the fringe channel order: the two renderings differ but their per-pixel R/B-swapped words
 	// match exactly (the FIR and pre-blend are symmetric under the swap).
 	if pixEqual(lcd, bgr) {
@@ -180,19 +190,5 @@ func TestLCDTextDegrades(t *testing.T) {
 	}
 	if inkPixels(blurred) == 0 {
 		t.Error("blurred text drew nothing")
-	}
-}
-
-// TestLCDTextShaderPaint exercises the shader blitter LCD lanes: a gradient-shaded srcOver paint keeps LCD fringing on
-// a known geometry.
-func TestLCDTextShaderPaint(t *testing.T) {
-	rgbh := font.DeviceProps{PixelGeometry: font.PixelGeometryRGBH}
-	shaded := renderLCDText(t, rgbh, font.EdgingSubpixelAntiAlias, func(_ *Canvas, p *Paint) (*Paint, bool) {
-		p.Shader = shaders.NewLinearGradient(geom.Point{X: 0, Y: 0}, geom.Point{X: 200, Y: 0},
-			[]colorcore.Color{0xFFFF0000, 0xFF0000FF}, nil, shaders.TileClamp, nil)
-		return p, false
-	})
-	if f := fringePixels(shaded); f == 0 {
-		t.Error("shader-painted LCD text has no fringing")
 	}
 }

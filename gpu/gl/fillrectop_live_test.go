@@ -7,10 +7,11 @@
 // This Source Code Form is "Incompatible With Secondary Licenses", as
 // defined by the Mozilla Public License, version 2.0.
 
-// Live-context tests for the fill-rect draw path: coverage-AA fill rects compared against the analytic axis-aligned
-// coverage (the Go-GPU vs Go-CPU self-consistency lane — for axis-aligned rects both the CPU analytic-AA rasterizer and
-// the GPU's inset/outset coverage ramp reduce to exact area coverage), rotated-quad AA sanity, batched multi-color
-// draws, and the FixedClip scissor. Skips when no GL context is available.
+// Live-context tests for the fill-rect draw path: coverage-AA fill rects, drawn directly or through a folded AA rect
+// clip, compared against the analytic axis-aligned coverage (the Go-GPU vs Go-CPU self-consistency lane — for
+// axis-aligned rects both the CPU analytic-AA rasterizer and the GPU's inset/outset coverage ramp reduce to exact area
+// coverage), rotated-quad AA sanity, batched multi-color draws, and the FixedClip scissor. Skips when no GL context is
+// available.
 
 package gl_test
 
@@ -22,6 +23,7 @@ import (
 	"github.com/richardwilkes/canvas/geom"
 	"github.com/richardwilkes/canvas/gpu"
 	"github.com/richardwilkes/canvas/gpu/gl"
+	"github.com/richardwilkes/canvas/raster"
 )
 
 func newLiveDrawSDC(t testing.TB, dc *gl.DirectContext, w, h int32) *gl.SurfaceDrawContext {
@@ -52,50 +54,71 @@ func axisCoverage(r geom.Rect, x, y int32) float32 {
 }
 
 func TestLiveFillRectAAPixels(t *testing.T) {
-	env, dc := newLiveDirectContext(t)
-	_ = env
-	sdc := newLiveDrawSDC(t, dc, 64, 64)
-	defer sdc.Release()
-
-	bg := [4]float32{1, 1, 1, 1}
-	sdc.Clear(bg)
-
 	rect := geom.Rect{Left: 10.25, Top: 10.25, Right: 30.75, Bottom: 20.75}
 	src := colorcore.PMColor4f{R: 0.1, G: 0.2, B: 0.4, A: 0.5}
 	identity := geom.IdentityMatrix()
-	sdc.FillRectToRect(nil, livePaint(src), gpu.AAYes, &identity, rect, rect)
+	for _, tc := range []struct {
+		draw func(sdc *gl.SurfaceDrawContext)
+		name string
+	}{
+		{
+			name: "aa-fill",
+			draw: func(sdc *gl.SurfaceDrawContext) {
+				sdc.FillRectToRect(nil, livePaint(src), gpu.AAYes, &identity, rect, rect)
+			},
+		},
+		{
+			// An AA device-rect clip folds into a non-AA full-target fill's edge AA through attemptQuadOptimization.
+			name: "aa-clip-fold",
+			draw: func(sdc *gl.SurfaceDrawContext) {
+				cs := liveClipStack()
+				cs.ClipRect(&identity, rect, gpu.AAYes, raster.ClipIntersect)
+				fillClipped(sdc, cs, src, geom.Rect{Right: 64, Bottom: 64}, gpu.AANo)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, dc := newLiveDirectContext(t)
+			sdc := newLiveDrawSDC(t, dc, 64, 64)
+			defer sdc.Release()
 
-	data := readSDC(t, sdc)
-	rb := 64 * 4
-	for y := int32(8); y < 24; y++ {
-		for x := int32(8); x < 34; x++ {
-			// Corner cells are exempt from the exact comparison: the GPU's AA ring interpolates coverage linearly
-			// across the corner triangles (~0.75 here) while the exact area is the x/y product (0.5625) — an inherent
-			// property of the per-edge-AA quad method that the GPU thresholds absorb. Edge (single fractional axis) and
-			// interior pixels must match the analytic area exactly.
-			ox := min(rect.Right, float32(x+1)) - max(rect.Left, float32(x))
-			oy := min(rect.Bottom, float32(y+1)) - max(rect.Top, float32(y))
-			corner := ox > 0 && ox < 1 && oy > 0 && oy < 1
-			if corner {
-				continue
-			}
-			cov := axisCoverage(rect, x, y)
-			// Coverage-as-alpha src-over: out = src*cov + dst*(1 - a*cov).
-			want := [4]float32{}
-			srcv := [4]float32{src.R, src.G, src.B, src.A}
-			for c := range 4 {
-				want[c] = srcv[c]*cov + bg[c]*(1-src.A*cov)
-			}
-			off := int(y)*rb + int(x)*4
-			for c := range 4 {
-				wantByte := int(want[c]*255 + 0.5)
-				got := int(data[off+c])
-				if d := got - wantByte; d < -3 || d > 3 {
-					t.Fatalf("pixel (%d,%d) channel %d = %d, want %d (cov %v)",
-						x, y, c, got, wantByte, cov)
+			bg := [4]float32{1, 1, 1, 1}
+			sdc.Clear(bg)
+			tc.draw(sdc)
+
+			data := readSDC(t, sdc)
+			rb := 64 * 4
+			for y := int32(8); y < 24; y++ {
+				for x := int32(8); x < 34; x++ {
+					// Corner cells are exempt from the exact comparison: the GPU's AA ring interpolates coverage
+					// linearly across the corner triangles (~0.75 here) while the exact area is the x/y product
+					// (0.5625) — an inherent property of the per-edge-AA quad method that the GPU thresholds absorb.
+					// Edge (single fractional axis) and interior pixels must match the analytic area exactly.
+					ox := min(rect.Right, float32(x+1)) - max(rect.Left, float32(x))
+					oy := min(rect.Bottom, float32(y+1)) - max(rect.Top, float32(y))
+					corner := ox > 0 && ox < 1 && oy > 0 && oy < 1
+					if corner {
+						continue
+					}
+					cov := axisCoverage(rect, x, y)
+					// Coverage-as-alpha src-over: out = src*cov + dst*(1 - a*cov).
+					want := [4]float32{}
+					srcv := [4]float32{src.R, src.G, src.B, src.A}
+					for c := range 4 {
+						want[c] = srcv[c]*cov + bg[c]*(1-src.A*cov)
+					}
+					off := int(y)*rb + int(x)*4
+					for c := range 4 {
+						wantByte := int(want[c]*255 + 0.5)
+						got := int(data[off+c])
+						if d := got - wantByte; d < -3 || d > 3 {
+							t.Fatalf("pixel (%d,%d) channel %d = %d, want %d (cov %v)",
+								x, y, c, got, wantByte, cov)
+						}
+					}
 				}
 			}
-		}
+		})
 	}
 }
 

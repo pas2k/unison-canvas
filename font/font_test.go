@@ -379,6 +379,17 @@ func TestDegenerateAndEmpty(t *testing.T) {
 	if got := fe.Metrics(&m); got != 0 || m != (Metrics{Flags: MetricsFlagBoundsInvalid}) {
 		t.Errorf("empty metrics = %v %+v", got, m)
 	}
+	// A font with no hhea table, where ascent/descent/leading have no source, takes the same early return.
+	noHhea, err := NewTypefaceFromData(sfntWithoutTables(t, readTestFont(t, "Roboto-Regular.ttf"), "hhea"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noHhea.hhea != nil {
+		t.Fatal("the hhea table survived the strip")
+	}
+	if got := NewFont(noHhea, 100, 1, 0).Metrics(&m); got != 0 || m != (Metrics{Flags: MetricsFlagBoundsInvalid}) {
+		t.Errorf("hhea-less metrics = %v %+v", got, m)
+	}
 	if n := fe.TextToGlyphs([]byte("Hxg!"), TextEncodingUTF8, nil); n != 4 {
 		t.Errorf("empty count = %d", n)
 	}
@@ -638,31 +649,6 @@ func TestBaselineSnapFlag(t *testing.T) {
 	f.SetBaselineSnap(true)
 	if !f.BaselineSnap() {
 		t.Error("SetBaselineSnap(true) did not take")
-	}
-}
-
-func TestMetricsBoundsInvalidFlag(t *testing.T) {
-	var m Metrics
-	NewFont(loadTypeface(t, "Roboto-Regular.ttf", 0), 100, 1, 0).Metrics(&m)
-	if m.Flags&MetricsFlagBoundsInvalid != 0 {
-		t.Errorf("a font with a head bbox reported invalid bounds: flags = %#x", m.Flags)
-	}
-	// The empty typeface (and any font the metrics recipe cannot run on) populates no bounds at all, so the four bounds
-	// fields are zero because nothing was read — not because the font reported an empty box.
-	NewFont(nil, 20, 1, 0).Metrics(&m)
-	if m.Flags&MetricsFlagBoundsInvalid == 0 {
-		t.Errorf("the empty typeface reported valid bounds: flags = %#x", m.Flags)
-	}
-	// The other lane into that early return: a font with no hhea table, where ascent/descent/leading have no source.
-	tf, err := NewTypefaceFromData(sfntWithoutTables(t, readTestFont(t, "Roboto-Regular.ttf"), "hhea"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tf.hhea != nil {
-		t.Fatal("the hhea table survived the strip")
-	}
-	if spacing := NewFont(tf, 100, 1, 0).Metrics(&m); spacing != 0 || m != (Metrics{Flags: MetricsFlagBoundsInvalid}) {
-		t.Errorf("hhea-less metrics = %v %+v", spacing, m)
 	}
 }
 

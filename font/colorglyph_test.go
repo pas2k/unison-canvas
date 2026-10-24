@@ -83,14 +83,20 @@ func smileyGlyphIn(t *testing.T, cache *StrikeCache, tf *Typeface, size float32,
 var faceCenterWord = uint32(255) | uint32(204)<<8 | uint32(0)<<16 | uint32(255)<<24
 
 func TestColorGlyphNeedsCurrentColor(t *testing.T) {
-	if !loadColorTypeface(t, "colr.ttf").GlyphMaskNeedsCurrentColor() {
-		t.Error("colr.ttf: COLR table must need the current color")
-	}
-	if loadColorTypeface(t, "sbix.ttf").GlyphMaskNeedsCurrentColor() {
-		t.Error("sbix.ttf must not need the current color")
-	}
-	if loadColorTypeface(t, "Roboto-Regular.ttf").GlyphMaskNeedsCurrentColor() {
-		t.Error("Roboto must not need the current color")
+	// A COLR table, v0 or v1, routes the foreground color into the scaler rec: its layers may paint with palette index
+	// 0xFFFF.
+	for _, c := range []struct {
+		file string
+		want bool
+	}{
+		{file: "colr.ttf", want: true},
+		{file: "test_glyphs-glyf_colr_1.ttf", want: true},
+		{file: "sbix.ttf"},
+		{file: "Roboto-Regular.ttf"},
+	} {
+		if got := loadColorTypeface(t, c.file).GlyphMaskNeedsCurrentColor(); got != c.want {
+			t.Errorf("%s: GlyphMaskNeedsCurrentColor = %v, want %v", c.file, got, c.want)
+		}
 	}
 }
 
@@ -111,6 +117,7 @@ func TestMeasuredBoundsCoverColorAndBitmapLanes(t *testing.T) {
 			// the same text matrix and no post 2x2, so the two must agree exactly, on every glyph of the font.
 			nonEmpty := 0
 			bounds := make([]geom.Rect, 1)
+			smileyGID := tf.UnicharToGlyph(smiley)
 			for gid := range uint16(tf.nGlyphs) {
 				g, _ := strike.DigestFor(ActionDirectMaskCPU, PackGlyphID(gid))
 				drawn := g.IRect()
@@ -126,9 +133,14 @@ func TestMeasuredBoundsCoverColorAndBitmapLanes(t *testing.T) {
 				}
 				// MeasureText joins the same per-glyph bounds, so it covers the drawn extent too.
 				var measured geom.Rect
-				f.MeasureText([]byte{uint8(gid), uint8(gid >> 8)}, TextEncodingGlyphID, &measured, nil)
+				width := f.MeasureText([]byte{uint8(gid), uint8(gid >> 8)}, TextEncodingGlyphID, &measured, nil)
 				if measured != want {
 					t.Errorf("glyph %d: MeasureText bounds %v, drawn %v", gid, measured, want)
+				}
+				// A bitmap glyph's advance is the linear hmtx value, read through the extents (largest strike at
+				// ppem 0): 51.2 at size 64.
+				if file == "sbix.ttf" && gid == smileyGID && width != 25.6 {
+					t.Errorf("glyph %d: MeasureText width %v, want 25.6", gid, width)
 				}
 			}
 			if nonEmpty == 0 {
@@ -201,6 +213,11 @@ func TestFaceColorPaintOutOfRangeCOLRv0(t *testing.T) {
 	// and in wrapping uint16 arithmetic, and its parser never validates the range, so a crafted base-glyph record panics
 	// inside COLR.Search during ordinary drawing or measuring. colr.ttf carries 15 layer records; both an oversized
 	// range and one whose end wraps to zero must answer "no color glyph" and leave the glyph on the outline lane.
+	//
+	// So must an empty range, which is in range: the load-time scan does not flag it and typesetting hands back an
+	// empty layer list with ok=true, but claiming the glyph for the color lane on that would measure and draw it as
+	// nothing. FreeType's FT_Get_Color_Glyph_Layer returns 0 on the first call and Skia falls through to the base
+	// outline.
 	data, err := os.ReadFile("testdata/colr.ttf")
 	if err != nil {
 		t.Fatal(err)
@@ -218,13 +235,15 @@ func TestFaceColorPaintOutOfRangeCOLRv0(t *testing.T) {
 			"outline-lane answer to compare against", outlineAction, outline.Format, maskInk(outline))
 	}
 	for _, c := range []struct {
-		name  string
-		first uint16
-		num   uint16
+		name    string
+		first   uint16
+		num     uint16
+		inRange bool
 	}{
 		{name: "past the end", first: 0, num: 1000},
 		{name: "start past the end", first: 1000, num: 1},
 		{name: "end wraps to zero", first: 65535, num: 1},
+		{name: "empty", first: 0, num: 0, inRange: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			tf, err2 := NewTypefaceFromData(patchCOLRv0Ranges(t, data, c.first, c.num), 0)
@@ -238,6 +257,18 @@ func TestFaceColorPaintOutOfRangeCOLRv0(t *testing.T) {
 			if gid == 0 {
 				t.Fatal("U+1F600 not mapped")
 			}
+			if c.inRange {
+				if tf.colr0BadGlyphs != nil {
+					t.Fatal("an empty layer range was flagged as out of range; the case proves nothing")
+				}
+				// typesetting still reports the glyph as a color glyph, which is the whole problem.
+				if layers, ok := tf.face.COLR.Search(gid); !ok {
+					t.Fatal("the patched record no longer parses; the case proves nothing")
+				} else if resolved, isV0 := layers.(tables.PaintColrLayersResolved); !isV0 || len(resolved) != 0 {
+					t.Fatalf("COLR.Search returned %T with %d layers, want an empty v0 layer list", layers,
+						len(resolved))
+				}
+			}
 			if paint, ok := tf.faceColorPaint(opentype.GID(gid)); ok || paint != nil {
 				t.Errorf("faceColorPaint = (%v, %v), want (nil, false)", paint, ok)
 			}
@@ -247,12 +278,12 @@ func TestFaceColorPaintOutOfRangeCOLRv0(t *testing.T) {
 			// The whole draw path, which is where the panic would land on untrusted data.
 			g, action := smileyGlyph(t, tf, 50, nil)
 			if action != outlineAction || g.Format != outline.Format || g.IRect() != outline.IRect() {
-				t.Fatalf("out-of-range COLRv0 rendered (action %d, format %d, %v), want the outline lane's "+
+				t.Fatalf("patched COLRv0 rendered (action %d, format %d, %v), want the outline lane's "+
 					"(action %d, format %d, %v)", action, g.Format, g.IRect(), outlineAction, outline.Format,
 					outline.IRect())
 			}
 			if !bytes.Equal(g.Image, outline.Image) {
-				t.Errorf("out-of-range COLRv0 mask carries %d ink, want the outline lane's %d", maskInk(g),
+				t.Errorf("patched COLRv0 mask carries %d ink, want the outline lane's %d", maskInk(g),
 					maskInk(outline))
 			}
 		})
@@ -265,69 +296,6 @@ func TestFaceColorPaintOutOfRangeCOLRv0(t *testing.T) {
 	}
 	if _, ok := tf.faceColorV0Layers(opentype.GID(tf.UnicharToGlyph(smiley))); !ok {
 		t.Error("the unpatched font lost its COLRv0 layers")
-	}
-}
-
-func TestCOLRv0EmptyLayerListStaysOnTheOutlineLane(t *testing.T) {
-	// A base-glyph record declaring NumLayers == 0 is perfectly in range (0+0 is never past numLayerRecords), so the
-	// load-time scan does not flag it and typesetting hands back an empty layer slice with ok=true. Claiming the glyph
-	// for the color lane on the strength of that commits it to an ARGB32 mask with neverRequestPath and an empty
-	// bounding box, so it measures as nothing and draws as nothing. FreeType's FT_Get_Color_Glyph_Layer returns 0 on
-	// the first call and Skia falls through to the base outline, which is what the font's own glyf table is there for.
-	data := readTestFont(t, "colr.ttf")
-	tf, err := NewTypefaceFromData(patchCOLRv0Ranges(t, data, 0, 0), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tf.colr0BadGlyphs != nil {
-		t.Fatal("an empty layer range was flagged as out of range; the case proves nothing")
-	}
-	gid := tf.UnicharToGlyph(smiley)
-	if gid == 0 {
-		t.Fatal("U+1F600 not mapped")
-	}
-	// typesetting still reports the glyph as a color glyph, which is the whole problem.
-	if layers, ok := tf.face.COLR.Search(gid); !ok {
-		t.Fatal("the patched record no longer parses; the case proves nothing")
-	} else if resolved, isV0 := layers.(tables.PaintColrLayersResolved); !isV0 || len(resolved) != 0 {
-		t.Fatalf("COLR.Search returned %T with %d layers, want an empty v0 layer list", layers, len(resolved))
-	}
-	if paint, ok := tf.faceColorPaint(opentype.GID(gid)); ok || paint != nil {
-		t.Errorf("faceColorPaint = (%v, %v), want (nil, false)", paint, ok)
-	}
-	if layers, ok := tf.faceColorV0Layers(opentype.GID(gid)); ok || layers != nil {
-		t.Errorf("faceColorV0Layers = (%v, %v), want (nil, false)", layers, ok)
-	}
-
-	// The glyph is measured and drawn as the outline it still has, byte for byte as the same font with no COLR table
-	// at all draws it.
-	g, action := smileyGlyph(t, tf, 50, nil)
-	if action != GlyphActionAccept {
-		t.Fatalf("action %v, want accept", action)
-	}
-	if g.Format != MaskA8 {
-		t.Errorf("format %v, want A8 (the outline lane)", g.Format)
-	}
-	outlineOnly, err := NewTypefaceFromData(sfntWithoutTables(t, data, "COLR", "CPAL"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref, action := smileyGlyph(t, outlineOnly, 50, nil)
-	if action != GlyphActionAccept {
-		t.Fatalf("the COLR-less reference was not accepted: action %v", action)
-	}
-	if g.IRect() != ref.IRect() {
-		t.Errorf("bounds %v, want the base outline's %v", g.IRect(), ref.IRect())
-	}
-	ink := 0
-	for i, v := range g.Image {
-		if i >= len(ref.Image) || v != ref.Image[i] {
-			t.Fatalf("mask differs from the base outline's at byte %d", i)
-		}
-		ink += int(v)
-	}
-	if ink == 0 {
-		t.Error("the glyph drew nothing")
 	}
 }
 
@@ -371,11 +339,11 @@ func TestCOLR0OutOfRangeGlyphs(t *testing.T) {
 	}
 }
 
-func TestCOLRv0GlyphMetrics(t *testing.T) {
+func TestCOLRv0GlyphMetricsAndImage(t *testing.T) {
 	tf := loadColorTypeface(t, "colr.ttf")
 	g, action := smileyGlyph(t, tf, 50, nil)
-	if action != GlyphActionAccept {
-		t.Fatalf("action %v", action)
+	if action != GlyphActionAccept || g.Image32 == nil {
+		t.Fatalf("action %v, image %v", action, g.Image32 != nil)
 	}
 	if g.Format != MaskARGB32 {
 		t.Fatalf("format %v, want ARGB32", g.Format)
@@ -393,14 +361,6 @@ func TestCOLRv0GlyphMetrics(t *testing.T) {
 	// Color glyphs never produce paths (neverRequestPath).
 	if g.Path() != nil {
 		t.Error("color glyph must have no path")
-	}
-}
-
-func TestCOLRv0GlyphImage(t *testing.T) {
-	tf := loadColorTypeface(t, "colr.ttf")
-	g, action := smileyGlyph(t, tf, 50, nil)
-	if action != GlyphActionAccept || g.Image32 == nil {
-		t.Fatalf("no image (action %v)", action)
 	}
 	// The face circle (palette 2: R=255 G=204 B=0, opaque) covers the glyph center.
 	cx := int(g.Width) / 2
@@ -1245,88 +1205,15 @@ func TestColorGlyphMemoryAccounting(t *testing.T) {
 	}
 }
 
-func TestBitmapFontMeasure(t *testing.T) {
-	// Measure runs through the extents (largest strike at ppem 0): advances are linear hmtx values.
-	tf := loadColorTypeface(t, "sbix.ttf")
-	f := NewFont(tf, 64, 1, 0)
-	gid := tf.UnicharToGlyph(smiley)
-	glyphs := []byte{byte(gid), byte(gid >> 8)}
-	var bounds geom.Rect
-	width := f.MeasureText(glyphs, TextEncodingGlyphID, &bounds, nil)
-	if width != 51.2 {
-		t.Errorf("measured width %v, want 51.2", width)
-	}
-	if bounds.IsEmpty() {
-		t.Error("measure bounds empty")
-	}
-}
-
-// TestBitmapLaneKeepsItsOwnFace covers the split between the bitmap-strike lane's Face and the design-unit one. The
-// lane is the only reader that wants a nonzero ppem, and typesetting's SetPpem throws away the Face's entire per-glyph
-// extents cache, so borrowing the shared Face (setting the ppem and restoring it around every glyph) left every lookup
-// facing an empty cache. With a Face of its own the lane rests at the strike's ppem and the cache survives from glyph
-// to glyph, while the design-unit readers keep seeing a Face that never left ppem 0.
-func TestBitmapLaneKeepsItsOwnFace(t *testing.T) {
-	tf := loadColorTypeface(t, "sbix.ttf")
-	gid := opentype.GID(tf.UnicharToGlyph(smiley))
-	if gid == 0 {
-		t.Fatal("U+1F600 not mapped")
-	}
-
-	// Warm the design-unit cache first: it must still be warm after the bitmap lane has run.
-	if tf.GlyphDesignBounds(uint16(gid)).IsEmpty() {
-		t.Fatal("design bounds empty")
-	}
-	const ppem = 64
-	if _, _, ok := tf.faceBitmapGlyph(gid, ppem); !ok {
-		t.Fatalf("no strike bitmap at ppem %d", ppem)
-	}
-	if tf.bitmapFace == nil {
-		t.Fatal("the bitmap lane did not take a Face of its own")
-	}
-	if tf.bitmapFace == tf.face {
-		t.Fatal("the bitmap lane is sharing the design-unit Face")
-	}
-	if x, y := tf.bitmapFace.Ppem(); x != ppem || y != ppem {
-		t.Errorf("the lane's Face rests at ppem (%d, %d), want (%d, %d) so its extents cache survives the call",
-			x, y, ppem, ppem)
-	}
-	if x, y := tf.face.Ppem(); x != 0 || y != 0 {
-		t.Errorf("the design-unit Face was left at ppem (%d, %d), want (0, 0)", x, y)
-	}
-
-	// An extents cache hit returns the stored value; a miss re-derives it, which for an sbix strike means decoding the
-	// PNG header and therefore allocating. Zero allocations is the cache being consulted rather than reset.
-	var extents tsfont.GlyphExtents
-	if allocs := testing.AllocsPerRun(20, func() { extents, _ = tf.bitmapFace.GlyphExtents(gid) }); allocs != 0 {
-		t.Errorf("re-reading the lane's extents allocated %v times per call, want 0 (the cache is being reset)", allocs)
-	}
-	if extents == (tsfont.GlyphExtents{}) {
-		t.Error("the lane reported empty extents")
-	}
-	// The same for the design-unit face: the bitmap lane must not have invalidated what was cached there either.
-	if allocs := testing.AllocsPerRun(20, func() { extents, _ = tf.face.GlyphExtents(gid) }); allocs != 0 {
-		t.Errorf("re-reading the design-unit extents allocated %v times per call, want 0", allocs)
-	}
-
-	// Another glyph at the same ppem must not disturb the ppem the lane rests at, and switching ppem must move only the
-	// lane's Face.
-	if _, _, ok := tf.faceBitmapGlyph(gid, 16); !ok {
-		t.Fatal("no strike bitmap at ppem 16")
-	}
-	if x, y := tf.bitmapFace.Ppem(); x != 16 || y != 16 {
-		t.Errorf("after a ppem 16 glyph the lane's Face is at (%d, %d), want (16, 16)", x, y)
-	}
-	if x, y := tf.face.Ppem(); x != 0 || y != 0 {
-		t.Errorf("the ppem 16 glyph moved the design-unit Face to (%d, %d), want (0, 0)", x, y)
-	}
-}
-
 func TestBitmapFacePpemDoesNotLeak(t *testing.T) {
 	// go-text's GlyphExtents prefers ppem-scaled bitmap-strike extents, so the bitmap lane must leave the shared Face at
 	// ppem 0. If it leaked a strike ppem, the design-unit extents readers (GlyphDesignBounds, glyphBounds, letterTop)
 	// would return stale, cross-strike, ppem-scaled bounds for later glyphs. sbix.ttf carries strikes at 16/64/128 ppem
 	// whose scaled-to-design-unit extents differ per strike, so a leak is observable.
+	//
+	// The lane reads through a Face of its own, left resting at the strike's ppem: typesetting's SetPpem throws away
+	// the Face's entire per-glyph extents cache, so borrowing the shared Face and restoring its ppem around every glyph
+	// left every lookup facing an empty cache.
 	tf := loadColorTypeface(t, "sbix.ttf")
 	gid := tf.UnicharToGlyph(smiley)
 	if gid == 0 {
@@ -1343,8 +1230,32 @@ func TestBitmapFacePpemDoesNotLeak(t *testing.T) {
 		if _, _, ok := tf.faceBitmapGlyph(opentype.GID(gid), ppem); !ok {
 			t.Fatalf("no strike bitmap at ppem %d", ppem)
 		}
+		if tf.bitmapFace == nil || tf.bitmapFace == tf.face {
+			t.Fatal("the bitmap lane is not using a Face of its own")
+		}
+		if x, y := tf.bitmapFace.Ppem(); x != ppem || y != ppem {
+			t.Errorf("ppem %d: the lane's Face rests at (%d, %d), want (%d, %d) so its extents cache survives the call",
+				ppem, x, y, ppem, ppem)
+		}
 		if x, y := tf.face.Ppem(); x != 0 || y != 0 {
 			t.Errorf("ppem %d leaked: Face left at (%d, %d), want (0, 0)", ppem, x, y)
+		}
+		// An extents cache hit returns the stored value; a miss re-derives it, which for an sbix strike means decoding
+		// the PNG header and therefore allocating. Zero allocations is the cache being consulted rather than reset, on
+		// the lane's Face and on the design-unit one alike.
+		var extents tsfont.GlyphExtents
+		if allocs := testing.AllocsPerRun(20, func() {
+			extents, _ = tf.bitmapFace.GlyphExtents(opentype.GID(gid))
+		}); allocs != 0 {
+			t.Errorf("ppem %d: re-reading the lane's extents allocated %v times per call, want 0", ppem, allocs)
+		}
+		if extents == (tsfont.GlyphExtents{}) {
+			t.Errorf("ppem %d: the lane reported empty extents", ppem)
+		}
+		if allocs := testing.AllocsPerRun(20, func() {
+			extents, _ = tf.face.GlyphExtents(opentype.GID(gid))
+		}); allocs != 0 {
+			t.Errorf("ppem %d: re-reading the design-unit extents allocated %v times per call, want 0", ppem, allocs)
 		}
 		if got := tf.GlyphDesignBounds(gid); got != want {
 			t.Errorf("after ppem %d: GlyphDesignBounds %+v, want stable %+v", ppem, got, want)

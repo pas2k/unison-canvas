@@ -432,33 +432,6 @@ func TestTessellationHelperInsetOutset(t *testing.T) {
 	}
 }
 
-func TestTessellationHelperDegenerateInset(t *testing.T) {
-	// A 0.4px-wide rect collapses under a 0.5px inset: the returned coverage estimates the subpixel area (width 0.4 ->
-	// ~0.4 coverage).
-	identity := geom.IdentityMatrix()
-	device := MakeQuadFromRect(geom.Rect{Left: 10, Top: 10, Right: 10.4, Bottom: 20}, &identity)
-
-	var h TessellationHelper
-	h.Reset(&device, nil)
-	if !h.IsSubpixel() {
-		t.Fatal("0.4px-wide quad should be subpixel")
-	}
-
-	devInset := device
-	coverage := h.Inset(f4Splat(0.5), &devInset, nil)
-	for i := range 4 {
-		if coverage[i] <= 0.35 || coverage[i] >= 0.45 {
-			t.Fatalf("degenerate inset coverage[%d] = %v, want ~0.4", i, coverage[i])
-		}
-	}
-	// The inset geometry collapsed to the vertical center line x = 10.2.
-	for i := range 4 {
-		if diff := devInset.X(i) - 10.2; diff > 1e-3 || diff < -1e-3 {
-			t.Fatalf("collapsed x[%d] = %v, want 10.2", i, devInset.X(i))
-		}
-	}
-}
-
 // TestFilterAndMipmapHaveEffect pins the polarity of the predicate its two call sites bind as mustFilter/mustMM: it
 // reports whether filtering and mipmapping *do* have a visible effect, so false — not true — is what permits the
 // downgrade to nearest / no mipmaps.

@@ -11,6 +11,7 @@ package pdf
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,37 +20,36 @@ import (
 )
 
 func TestGlyphUseSetHasForEach(t *testing.T) {
-	g := newGlyphUse(1, 10)
-	for _, gid := range []uint16{0, 3, 7, 10} {
-		g.set(gid)
-	}
-	for _, gid := range []uint16{0, 3, 7, 10} {
-		if !g.has(gid) {
-			t.Errorf("expected %d set", gid)
-		}
-	}
-	for _, gid := range []uint16{1, 2, 4, 5, 6, 8, 9} {
-		if g.has(gid) {
-			t.Errorf("expected %d clear", gid)
-		}
-	}
-	var got []uint16
-	g.forEach(func(gid uint16) { got = append(got, gid) })
-	if want := []uint16{0, 3, 7, 10}; !reflect.DeepEqual(got, want) {
-		t.Errorf("forEach = %v, want %v", got, want)
-	}
-}
-
-func TestGlyphUseFirstNonZeroOffset(t *testing.T) {
-	// A subset whose firstNonZero is not 1 exercises the toCode offset lane.
-	g := newGlyphUse(5, 9)
-	for _, gid := range []uint16{0, 5, 8} {
-		g.set(gid)
-	}
-	var got []uint16
-	g.forEach(func(gid uint16) { got = append(got, gid) })
-	if want := []uint16{0, 5, 8}; !reflect.DeepEqual(got, want) {
-		t.Errorf("forEach = %v, want %v", got, want)
+	for _, c := range []struct {
+		name        string
+		gids        []uint16
+		first, last uint16
+	}{
+		{name: "range from 1", first: 1, last: 10, gids: []uint16{0, 3, 7, 10}},
+		// A subset whose firstNonZero is not 1 exercises the toCode offset lane.
+		{name: "offset range", first: 5, last: 9, gids: []uint16{0, 5, 8}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newGlyphUse(c.first, c.last)
+			for _, gid := range c.gids {
+				g.set(gid)
+			}
+			// has is defined for glyph 0 and [first, last].
+			check := func(gid uint16) {
+				if want := slices.Contains(c.gids, gid); g.has(gid) != want {
+					t.Errorf("has(%d) = %v, want %v", gid, !want, want)
+				}
+			}
+			check(0)
+			for gid := c.first; gid <= c.last; gid++ {
+				check(gid)
+			}
+			var got []uint16
+			g.forEach(func(gid uint16) { got = append(got, gid) })
+			if !reflect.DeepEqual(got, c.gids) {
+				t.Errorf("forEach = %v, want %v", got, c.gids)
+			}
+		})
 	}
 }
 

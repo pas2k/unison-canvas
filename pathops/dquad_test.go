@@ -30,15 +30,6 @@ func requireApproxPt(t *testing.T, got, want dPoint, ctx string) {
 	}
 }
 
-func TestQuadSubDivideIdentity(t *testing.T) {
-	q := dq(1, 1, 0, 2, 3, 3)
-	sub := q.subDivide(0, 1)
-	// The (0,1) range must return the exact same control points (the fast-path early return).
-	if sub != q {
-		t.Fatalf("subDivide(0,1) changed the quad: got %+v want %+v", sub, q)
-	}
-}
-
 func TestQuadSubDivideMatchesPtAtT(t *testing.T) {
 	quads := []dQuad{
 		dq(1, 1, 0, 2, 3, 3),
@@ -50,6 +41,10 @@ func TestQuadSubDivideMatchesPtAtT(t *testing.T) {
 		for _, r := range ranges {
 			t1, t2 := r[0], r[1]
 			sub := q.subDivide(t1, t2)
+			// The (0,1) range must return the exact same control points (the fast-path early return).
+			if t1 == 0 && t2 == 1 && sub != q {
+				t.Errorf("subDivide(0,1) changed q%d: got %+v want %+v", qi, sub, q)
+			}
 			for _, s := range []float64{0, 0.25, 0.5, 0.75, 1} {
 				mapped := t1 + s*(t2-t1)
 				requireApproxPt(t, sub.ptAtT(s), q.ptAtT(mapped),
@@ -123,38 +118,29 @@ func TestQuadDxDyAtT(t *testing.T) {
 	}
 }
 
-func TestQuadHullIntersectsSeparated(t *testing.T) {
-	// Two identical small arches, one shifted far to the right: their hulls are disjoint, so the conservative reject
-	// must return false (at most an endpoint intersection).
-	q1 := dq(0, 0, 1, 1, 2, 0)
-	q2 := dq(10, 0, 11, 1, 12, 0)
-	if result, _ := q1.hullIntersects(q2); result {
-		t.Errorf("separated hulls: hullIntersects returned true, want false")
+func TestQuadHullIntersects(t *testing.T) {
+	cases := []struct {
+		name       string
+		q1, q2     dQuad
+		wantResult bool
+		wantLinear bool // checked only when wantResult is true
+	}{
+		// Two identical small arches, one shifted far to the right: their hulls are disjoint, so the conservative
+		// reject must return false (at most an endpoint intersection).
+		{name: "separated", q1: dq(0, 0, 1, 1, 2, 0), q2: dq(10, 0, 11, 1, 12, 0)},
+		// An up-arch and a down-arch that genuinely cross: the reject must return true (it may never reject a real
+		// crossing) and neither quad is a line, so isLinear is false.
+		{name: "crossing", q1: dq(0, 0, 2, 4, 4, 0), q2: dq(0, 2, 2, -2, 4, 2), wantResult: true},
+		// A collinear "quad" (its hull is a line) against a quad that does not share endpoints: result is true and
+		// isLinear is reported.
+		{name: "linear", q1: dq(0, 0, 1, 1, 2, 2), q2: dq(0, 3, 1, 3, 2, 3), wantResult: true, wantLinear: true},
 	}
-}
-
-func TestQuadHullIntersectsCrossing(t *testing.T) {
-	// An up-arch and a down-arch that genuinely cross: the reject must return true (it may never reject a real
-	// crossing) and neither quad is a line, so isLinear is false.
-	q1 := dq(0, 0, 2, 4, 4, 0)
-	q2 := dq(0, 2, 2, -2, 4, 2)
-	result, isLinear := q1.hullIntersects(q2)
-	if !result {
-		t.Errorf("crossing hulls: hullIntersects returned false, want true")
-	}
-	if isLinear {
-		t.Errorf("crossing hulls: isLinear=true, want false")
-	}
-}
-
-func TestQuadHullIntersectsLinear(t *testing.T) {
-	// A collinear "quad" (its hull is a line) against a quad that does not share endpoints: result is true and isLinear
-	// is reported.
-	q1 := dq(0, 0, 1, 1, 2, 2)
-	q2 := dq(0, 3, 1, 3, 2, 3)
-	result, isLinear := q1.hullIntersects(q2)
-	if !result || !isLinear {
-		t.Errorf("linear hull: got (result=%v,isLinear=%v), want (true,true)", result, isLinear)
+	for _, c := range cases {
+		result, isLinear := c.q1.hullIntersects(c.q2)
+		if result != c.wantResult || (c.wantResult && isLinear != c.wantLinear) {
+			t.Errorf("%s: got (result=%v,isLinear=%v), want (%v,%v)", c.name, result, isLinear, c.wantResult,
+				c.wantLinear)
+		}
 	}
 }
 
@@ -233,20 +219,6 @@ func TestIntersectRayLineCrossing(t *testing.T) {
 		t.Errorf("crossing rays: t=(%g,%g) want (0.5,0.5)", in.ts[0][0], in.ts[1][0])
 	}
 	requireApproxPt(t, in.pt(0), dPoint{x: 1, y: 1}, "crossing rays point")
-}
-
-func TestIntersectRayLineCoincident(t *testing.T) {
-	// Two overlapping segments of the same line: the ray form has no single answer, so it returns the two endpoints
-	// with a fixed choice of T values (t on a = 0, t on b = 1).
-	in := newIntersections()
-	a := dLine{pts: [2]dPoint{{x: 0, y: 0}, {x: 2, y: 2}}}
-	b := dLine{pts: [2]dPoint{{x: 1, y: 1}, {x: 3, y: 3}}}
-	if used := in.intersectRayLine(a, b); used != 2 {
-		t.Fatalf("coincident rays: used=%d want 2", used)
-	}
-	if in.ts[0][0] != 0 || in.ts[1][0] != 1 || in.ts[1][1] != 1 {
-		t.Errorf("coincident rays: t=(%g;%g,%g) want (0;1,1)", in.ts[0][0], in.ts[1][0], in.ts[1][1])
-	}
 }
 
 func TestIntersectRayLineParallel(t *testing.T) {

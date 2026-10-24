@@ -281,27 +281,6 @@ func TestTransformTranslateScale(t *testing.T) {
 	checkPoints(t, p, pts(12, 26, 16, 32, 20, 38, 24, 44))
 }
 
-func TestTransformPreservesOval(t *testing.T) {
-	p := New().AddOval(geom.RectLTRB(0, 0, 20, 10), geom.DirectionCW)
-
-	// Scale/translate keeps oval-ness.
-	var m geom.Matrix
-	m.SetScaleTranslate(2, 2, 5, 5)
-	p.Transform(&m)
-	if bounds, ok := p.IsOval(); !ok || bounds != geom.RectLTRB(5, 5, 45, 25) {
-		t.Errorf("scaled oval = %v, %v", bounds, ok)
-	}
-
-	// 45-degree rotate does not stay rect, so the oval flag drops.
-	q := New().AddOval(geom.RectLTRB(0, 0, 20, 10), geom.DirectionCW)
-	var r geom.Matrix
-	r.SetRotate(45)
-	q.Transform(&r)
-	if _, ok := q.IsOval(); ok {
-		t.Error("rotated (45deg) oval should not report as oval")
-	}
-}
-
 // TestTransformShapeIdentity checks that a transform carries a simple shape's identity (an oval stays an oval, a rrect
 // stays a rrect and never reports as an oval) whenever the matrix keeps rects as rects. No direction or start index is
 // tracked, so a mirror needs no bookkeeping beyond the flag.
@@ -324,12 +303,16 @@ func TestTransformShapeIdentity(t *testing.T) {
 		t.Error("a rrect must never report as an oval")
 	}
 
-	// A 45-degree rotate is not rect-stays-rect, so the rrect identity drops too.
+	// A 45-degree rotate is not rect-stays-rect, so both identities drop.
 	var r geom.Matrix
 	r.SetRotate(45)
 	rrect.Transform(&r)
 	if rrect.isa != isAGeneral {
 		t.Errorf("rotated rrect identity = %v, want isAGeneral", rrect.isa)
+	}
+	oval.Transform(&r)
+	if _, ok := oval.IsOval(); ok {
+		t.Error("rotated (45deg) oval should not report as oval")
 	}
 
 	// TransformTo carries the identity to the destination without disturbing the source.

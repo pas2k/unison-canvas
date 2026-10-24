@@ -166,29 +166,28 @@ func TestJoinEnds(t *testing.T) {
 	}
 }
 
-// TestBridgeWindingSquare traces a single square through the winding driver and checks the output area.
-func TestBridgeWindingSquare(t *testing.T) {
-	in := rectPath(0, 0, 10, 10, path.FillEvenOdd)
-	head := prepModel(t, in)
-	out := traceSimplify(t, head, path.FillEvenOdd, false)
-	checkArea(t, "winding square", out, 100, 0.01)
-}
-
-// TestBridgeWindingLShape traces a non-convex (but non-self-intersecting) L through the winding driver.
-func TestBridgeWindingLShape(t *testing.T) {
-	in := polyPath(path.FillEvenOdd,
-		pt(0, 0), pt(20, 0), pt(20, 10), pt(10, 10), pt(10, 20), pt(0, 20))
-	head := prepModel(t, in)
-	out := traceSimplify(t, head, path.FillEvenOdd, false)
-	checkArea(t, "winding L", out, 300, 0.01)
-}
-
-// TestBridgeXorSquare traces a single square through the xor (even-odd) driver.
-func TestBridgeXorSquare(t *testing.T) {
-	in := rectPath(0, 0, 10, 10, path.FillEvenOdd)
-	head := prepModel(t, in)
-	out := traceSimplify(t, head, path.FillEvenOdd, true)
-	checkArea(t, "xor square", out, 100, 0.01)
+// TestBridgeTracePreservesArea traces single non-self-intersecting contours through the winding and xor (even-odd)
+// drivers and checks the output area.
+func TestBridgeTracePreservesArea(t *testing.T) {
+	for _, tc := range []struct {
+		in   *path.Path
+		name string
+		area float64
+		xor  bool
+	}{
+		{name: "winding square", in: rectPath(0, 0, 10, 10, path.FillEvenOdd), area: 100},
+		{
+			// Non-convex, but not self-intersecting.
+			name: "winding L",
+			in:   polyPath(path.FillEvenOdd, pt(0, 0), pt(20, 0), pt(20, 10), pt(10, 10), pt(10, 20), pt(0, 20)),
+			area: 300,
+		},
+		{name: "xor square", in: rectPath(0, 0, 10, 10, path.FillEvenOdd), xor: true, area: 100},
+	} {
+		head := prepModel(t, tc.in)
+		out := traceSimplify(t, head, path.FillEvenOdd, tc.xor)
+		checkArea(t, tc.name, out, tc.area, 0.01)
+	}
 }
 
 // TestDoneAngle checks that doneAngle reports the angle's starter span done flag.

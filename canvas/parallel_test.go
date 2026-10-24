@@ -111,40 +111,27 @@ func TestRectFillBandBoundsByteIdentical(t *testing.T) {
 	}
 }
 
-// TestDrawRectShadedParallelMatchesSerial drives the full public canvas path (whose rect-fill lane bands large shaded
-// fills) and requires it to match a serial reference fill byte-for-byte, confirming the dispatch is wired correctly and
-// stays byte-exact.
-func TestDrawRectShadedParallelMatchesSerial(t *testing.T) {
-	const w, h = 256, 256
-	ident := geom.IdentityMatrix()
-	rect := geom.RectLTRB(8.4, 8.4, 247.6, 247.6)
-	for _, aa := range []bool{true, false} {
-		paint := parallelGradientPaint(aa)
-
-		pmPublic := raster.NewPixmap(w, h)
-		NewForPixmap(pmPublic).DrawRect(rect, paint)
-
-		pmRef := raster.NewPixmap(w, h)
-		var rc raster.Clip
-		rc.SetRect(geom.IRectWH(w, h))
-		fillRectShadedBand(pmRef, &rc, rect.Sorted(), paint, &ident, aa)
-
-		if !bytes.Equal(pmPublic.RGBA8888Bytes(), pmRef.RGBA8888Bytes()) {
-			t.Fatalf("aa=%v: public parallel DrawRect differs from serial reference", aa)
-		}
-	}
-}
-
-// TestDrawRectShadedParallelDeterministic renders the same large shaded scene twice through the public path and
-// requires identical output — the concurrent band fill must introduce no nondeterminism (run under -race for the
-// accompanying data-race check).
+// TestDrawRectShadedParallelDeterministic renders the same large shaded scene several times through the public path
+// (whose rect-fill lane bands large shaded fills) and requires identical output — the concurrent band fill must
+// introduce no nondeterminism (run under -race for the accompanying data-race check). The first gradient render must
+// also match a serial reference fill byte-for-byte, confirming the dispatch is wired correctly and stays byte-exact.
 func TestDrawRectShadedParallelDeterministic(t *testing.T) {
 	const w, h = 256, 256
+	ident := geom.IdentityMatrix()
 	rect := geom.RectLTRB(8, 8, 248, 248)
 	for _, aa := range []bool{true, false} {
-		for _, mk := range []func(bool) *Paint{parallelGradientPaint, parallelImagePaint} {
+		for mi, mk := range []func(bool) *Paint{parallelGradientPaint, parallelImagePaint} {
 			first := raster.NewPixmap(w, h)
 			NewForPixmap(first).DrawRect(rect, mk(aa))
+			if mi == 0 {
+				ref := raster.NewPixmap(w, h)
+				var rc raster.Clip
+				rc.SetRect(geom.IRectWH(w, h))
+				fillRectShadedBand(ref, &rc, rect.Sorted(), mk(aa), &ident, aa)
+				if !bytes.Equal(first.RGBA8888Bytes(), ref.RGBA8888Bytes()) {
+					t.Fatalf("aa=%v: public parallel DrawRect differs from serial reference", aa)
+				}
+			}
 			for i := 0; i < 4; i++ {
 				again := raster.NewPixmap(w, h)
 				NewForPixmap(again).DrawRect(rect, mk(aa))
@@ -258,36 +245,15 @@ func TestDrawPaintBandByteIdentical(t *testing.T) {
 	}
 }
 
-// TestDrawPaintShadedParallelMatchesSerial drives the full public canvas path (DrawPaint, whose lane bands large
-// full-device shaded fills) unclipped and requires it to match a serial reference fill byte-for-byte, confirming the
-// dispatch is wired correctly and stays byte-exact.
-func TestDrawPaintShadedParallelMatchesSerial(t *testing.T) {
-	const w, h = 200, 200
-	ident := geom.IdentityMatrix()
-	full := geom.IRectWH(w, h)
-	for _, mk := range []func(bool) *Paint{parallelGradientPaint, parallelImagePaint} {
-		paint := mk(false)
-
-		pmPublic := raster.NewPixmap(w, h)
-		NewForPixmap(pmPublic).DrawPaint(paint)
-
-		pmRef := raster.NewPixmap(w, h)
-		rc := raster.NewRasterClip()
-		rc.SetRect(full)
-		fillIRectShadedBand(pmRef, rc, full, paint, &ident)
-
-		if !bytes.Equal(pmPublic.RGBA8888Bytes(), pmRef.RGBA8888Bytes()) {
-			t.Fatalf("public parallel DrawPaint differs from serial reference")
-		}
-	}
-}
-
 // TestDrawPaintShadedParallelDeterministic renders the same full-device shaded scene several times through the public
 // DrawPaint path — unclipped, under a rect clip, and under an antialiased oval clip — and requires identical output
 // each time: the concurrent band fill must introduce no nondeterminism, and the bands sharing the device's (complex/AA)
-// clip must be race-free (run under -race).
+// clip must be race-free (run under -race). The first unclipped render must also match a serial reference fill
+// byte-for-byte, confirming the dispatch is wired correctly and stays byte-exact.
 func TestDrawPaintShadedParallelDeterministic(t *testing.T) {
 	const w, h = 200, 200
+	ident := geom.IdentityMatrix()
+	full := geom.IRectWH(w, h)
 	clips := []func(*Canvas){
 		func(*Canvas) {}, // unclipped (full-device rect clip)
 		func(cv *Canvas) { cv.ClipRect(geom.RectLTRB(6, 7, w-5, h-9), raster.ClipIntersect, false) },
@@ -303,6 +269,15 @@ func TestDrawPaintShadedParallelDeterministic(t *testing.T) {
 			cv := NewForPixmap(first)
 			setClip(cv)
 			cv.DrawPaint(mk(false))
+			if ci == 0 {
+				ref := raster.NewPixmap(w, h)
+				rc := raster.NewRasterClip()
+				rc.SetRect(full)
+				fillIRectShadedBand(ref, rc, full, mk(false), &ident)
+				if !bytes.Equal(first.RGBA8888Bytes(), ref.RGBA8888Bytes()) {
+					t.Fatalf("public parallel DrawPaint differs from serial reference")
+				}
+			}
 			for i := 0; i < 4; i++ {
 				again := raster.NewPixmap(w, h)
 				cv2 := NewForPixmap(again)

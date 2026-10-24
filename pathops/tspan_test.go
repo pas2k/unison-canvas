@@ -100,38 +100,35 @@ func TestTQuadRayAndHullDelegation(t *testing.T) {
 	}
 }
 
-func TestTCoincidentSetPerpMatch(t *testing.T) {
+func TestTCoincidentSetPerp(t *testing.T) {
 	c2 := tq(dq(0, 0, 4, 8, 8, 0))
+	c1 := tq(dq(0, 0, 1, 1, 2, 0)) // any curve supplying a tangent direction at t1
 	const u = 0.4
-	cPt := c2.quad.ptAtT(u)
-	c1 := tq(dq(0, 0, 1, 1, 2, 0)) // any curve supplying a tangent direction at t
-	var coin tCoincident
-	coin.setPerp(c1, 0.3, cPt, c2)
-	if !coin.isMatch() {
-		t.Fatalf("expected a coincidence match for a point on the opposite curve")
-	}
-	if !coin.perpPoint().approximatelyEqual(cPt) {
-		t.Errorf("perp point %v not near cPt %v", coin.perpPoint(), cPt)
-	}
-	if math.Abs(coin.perpT()-u) > 1e-6 {
-		t.Errorf("perpT=%g want ~%g", coin.perpT(), u)
-	}
-}
-
-func TestTCoincidentSetPerpNoMatch(t *testing.T) {
-	c2 := tq(dq(0, 0, 4, 8, 8, 0))
-	c1 := tq(dq(0, 0, 1, 1, 2, 0))
-	// A point well off the opposite curve cannot match.
-	off := dPoint{x: 3, y: 40}
-	var coin tCoincident
-	coin.setPerp(c1, 0.5, off, c2)
-	if coin.isMatch() {
-		t.Errorf("did not expect a match for a point off the curve")
-	}
-	// When the perpendicular ray misses the curve entirely, setPerp resets to the init state.
-	if coin.perpT() >= 0 && !coin.perpPoint().approximatelyEqual(off) {
-		// A found-but-non-matching perp is fine; the assertion above already covers isMatch.
-		return
+	for _, tc := range []struct {
+		name  string
+		t1    float64
+		pt    dPoint
+		match bool
+		perpT float64 // checked, along with perpPoint near pt, only on a match
+	}{
+		{name: "point on the opposite curve", t1: 0.3, pt: c2.quad.ptAtT(u), match: true, perpT: u},
+		{name: "point well off the opposite curve", t1: 0.5, pt: dPoint{x: 3, y: 40}},
+	} {
+		var coin tCoincident
+		coin.setPerp(c1, tc.t1, tc.pt, c2)
+		if coin.isMatch() != tc.match {
+			t.Errorf("%s: isMatch = %v, want %v", tc.name, coin.isMatch(), tc.match)
+			continue
+		}
+		if !tc.match {
+			continue
+		}
+		if !coin.perpPoint().approximatelyEqual(tc.pt) {
+			t.Errorf("%s: perp point %v not near %v", tc.name, coin.perpPoint(), tc.pt)
+		}
+		if math.Abs(coin.perpT()-tc.perpT) > 1e-6 {
+			t.Errorf("%s: perpT=%g want ~%g", tc.name, coin.perpT(), tc.perpT)
+		}
 	}
 }
 
@@ -253,20 +250,6 @@ func TestTSpanOnlyEndPointsInCommon(t *testing.T) {
 	}
 }
 
-func TestTSpanLinearIntersects(t *testing.T) {
-	// A near-straight span (essentially the x-axis).
-	line := newTSpan(tq(dq(0, 0, 1, 1e-7, 2, 0)))
-	line.init(tq(dq(0, 0, 1, 1e-7, 2, 0)))
-	above := tq(dq(0, 1, 1, 2, 2, 1))     // wholly above y=0
-	crossing := tq(dq(1, -1, 1, 1, 1, 3)) // straddles y=0
-	if got := line.linearIntersects(above); got != 0 {
-		t.Errorf("above-line span: got %d want 0", got)
-	}
-	if got := line.linearIntersects(crossing); got != 1 {
-		t.Errorf("crossing span: got %d want 1", got)
-	}
-}
-
 func TestTSpanBoundedList(t *testing.T) {
 	q := dq(0, 0, 2, 4, 4, 0)
 	c := tq(q)
@@ -354,14 +337,22 @@ func TestTSpanLinearsIntersect(t *testing.T) {
 		s.init(tq(q))
 		return s
 	}
-	line := mk(dq(0, 0, 1, 1e-7, 2, 0))
-	above := mk(dq(0, 1, 1, 2, 2, 1))
-	crossing := mk(dq(1, -1, 1, 1, 1, 3))
+	line := mk(dq(0, 0, 1, 1e-7, 2, 0)) // a near-straight span (essentially the x-axis)
+	aboveQ := dq(0, 1, 1, 2, 2, 1)      // wholly above y=0
+	crossingQ := dq(1, -1, 1, 1, 1, 3)  // straddles y=0
+	above := mk(aboveQ)
+	crossing := mk(crossingQ)
 	if line.linearsIntersect(above) {
 		t.Errorf("linearsIntersect(above) should be false")
 	}
 	if !line.linearsIntersect(crossing) {
 		t.Errorf("linearsIntersect(crossing) should be true")
+	}
+	if got := line.linearIntersects(tq(aboveQ)); got != 0 {
+		t.Errorf("linearIntersects(above): got %d want 0", got)
+	}
+	if got := line.linearIntersects(tq(crossingQ)); got != 1 {
+		t.Errorf("linearIntersects(crossing): got %d want 1", got)
 	}
 }
 

@@ -117,51 +117,45 @@ func TestPathOpsDVector(t *testing.T) {
 func TestDVectorNormalize(t *testing.T) {
 	// 1/4096 matches the default scalar-nearly-zero threshold.
 	const tol = 1.0 / (1 << 12)
-	assertDoublesEqual := func(left, right float64) {
-		t.Helper()
-		if math.Abs(left-right) > tol {
-			t.Fatalf("%f != %f", left, right)
+	nan := math.NaN()
+	for _, tc := range []struct {
+		name   string
+		in     dVector
+		finite bool
+		want   dVector // a NaN component requires NaN
+		tol    float64
+	}{
+		{
+			name:   "positive",
+			in:     dVector{x: 1.2, y: 3.4},
+			finite: true,
+			want:   dVector{x: 0.332820, y: 0.942990},
+			tol:    tol,
+		},
+		{
+			name:   "negative y",
+			in:     dVector{x: 2.3, y: -4.5},
+			finite: true,
+			want:   dVector{x: 0.455111, y: -0.890435},
+			tol:    tol,
+		},
+		{name: "zero vector gives NaN", in: dVector{x: 0, y: 0}, want: dVector{x: nan, y: nan}},
+		{name: "overflowing length gives zero", in: dVector{x: math.MaxFloat64, y: math.MaxFloat64}, finite: true},
+	} {
+		v := tc.in
+		v.normalize()
+		if v.isFinite() != tc.finite {
+			t.Fatalf("%s: isFinite = %v, want %v", tc.name, v.isFinite(), tc.finite)
 		}
-	}
-	first := dVector{x: 1.2, y: 3.4}
-	first.normalize()
-	if !first.isFinite() {
-		t.Fatal("first should be finite")
-	}
-	assertDoublesEqual(first.x, 0.332820)
-	assertDoublesEqual(first.y, 0.942990)
-
-	second := dVector{x: 2.3, y: -4.5}
-	second.normalize()
-	if !second.isFinite() {
-		t.Fatal("second should be finite")
-	}
-	assertDoublesEqual(second.x, 0.455111)
-	assertDoublesEqual(second.y, -0.890435)
-}
-
-func TestDVectorNormalizeInfinityAndNan(t *testing.T) {
-	first := dVector{x: 0, y: 0}
-	first.normalize()
-	if first.isFinite() {
-		t.Fatal("first should not be finite")
-	}
-	if !math.IsNaN(first.x) {
-		t.Fatalf("%f is not nan", first.x)
-	}
-	if !math.IsNaN(first.y) {
-		t.Fatalf("%f is not nan", first.y)
-	}
-
-	second := dVector{x: math.MaxFloat64, y: math.MaxFloat64}
-	second.normalize()
-	if !second.isFinite() {
-		t.Fatal("second should be finite")
-	}
-	if second.x != 0 {
-		t.Fatalf("%f != 0", second.x)
-	}
-	if second.y != 0 {
-		t.Fatalf("%f != 0", second.y)
+		for _, c := range [][2]float64{{v.x, tc.want.x}, {v.y, tc.want.y}} {
+			got, want := c[0], c[1]
+			if math.IsNaN(want) {
+				if !math.IsNaN(got) {
+					t.Fatalf("%s: %f is not nan", tc.name, got)
+				}
+			} else if math.Abs(got-want) > tc.tol {
+				t.Fatalf("%s: %f != %f", tc.name, got, want)
+			}
+		}
 	}
 }

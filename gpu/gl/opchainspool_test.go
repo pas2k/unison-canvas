@@ -57,17 +57,3 @@ func TestRecycleOpChainsBoxClearsAndPreservesCapacity(t *testing.T) {
 		}
 	}
 }
-
-// TestBorrowOpChainsBoxIsClean verifies a borrowed box always presents a length-0 backing, whether it is a fresh box or
-// a reused one carrying a preserved (grown) backing, so NewOpsTask starts opChains from a clean array in both cases.
-func TestBorrowOpChainsBoxIsClean(t *testing.T) {
-	// Prime the pool with a recycled, grown box so a subsequent borrow can take the reuse path.
-	box := borrowOpChainsBox()
-	box.chains = append(box.chains, opChain{}, opChain{})
-	recycleOpChainsBox(box)
-
-	got := borrowOpChainsBox()
-	if len(got.chains) != 0 {
-		t.Fatalf("borrowed box backing not length 0: %d", len(got.chains))
-	}
-}

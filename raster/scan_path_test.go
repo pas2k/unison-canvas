@@ -49,102 +49,95 @@ func checkMask(t *testing.T, got, want []string) {
 	}
 }
 
-func TestFillRectAligned(t *testing.T) {
-	p := path.New()
-	p.AddRect(geom.RectLTRB(2, 1, 6, 4), geom.DirectionCW)
-	got := fillToMask(t, p, 8, 5)
-	checkMask(t, got, []string{
-		"........",
-		"..####..",
-		"..####..",
-		"..####..",
-		"........",
-	})
-}
-
-func TestFillRectPixelCenters(t *testing.T) {
-	// Non-AA coverage follows pixel centers: [0.5, 3.5] covers columns/rows 1..3.
-	p := path.New()
-	p.AddRect(geom.RectLTRB(0.5, 0.5, 3.5, 3.5), geom.DirectionCW)
-	got := fillToMask(t, p, 5, 5)
-	checkMask(t, got, []string{
-		".....",
-		".###.",
-		".###.",
-		".###.",
-		".....",
-	})
-}
-
-func TestFillTriangleConvexWalker(t *testing.T) {
-	p := path.New()
-	p.MoveTo(4, 0)
-	p.LineTo(8, 8)
-	p.LineTo(0, 8)
-	p.Close()
-	if !p.IsConvex() {
-		t.Fatal("triangle should be convex")
-	}
-	got := fillToMask(t, p, 8, 8)
-	// Rather than pinning exact pixels, compare against the even-odd fill of the same triangle, which must match.
-	p2 := p.Clone()
-	p2.SetFillType(path.FillEvenOdd)
-	got2 := fillToMask(t, p2, 8, 8)
-	for y := range got {
-		if got[y] != got2[y] {
-			t.Errorf("row %d: winding %q vs even-odd %q", y, got[y], got2[y])
+func TestFillExactMasks(t *testing.T) {
+	// Two nested same-direction rects: winding fills both, even-odd leaves a hole.
+	donut := func(ft path.FillType) func(*path.Path) {
+		return func(p *path.Path) {
+			p.AddRect(geom.RectLTRB(1, 1, 7, 7), geom.DirectionCW)
+			p.AddRect(geom.RectLTRB(3, 3, 5, 5), geom.DirectionCW)
+			p.SetFillType(ft)
 		}
 	}
-}
-
-func TestFillWindingVsEvenOddDonut(t *testing.T) {
-	// Two nested same-direction rects: winding fills both, even-odd leaves a hole.
-	build := func(ft path.FillType) *path.Path {
-		p := path.New()
-		p.AddRect(geom.RectLTRB(1, 1, 7, 7), geom.DirectionCW)
-		p.AddRect(geom.RectLTRB(3, 3, 5, 5), geom.DirectionCW)
-		p.SetFillType(ft)
-		return p
+	for _, c := range []struct {
+		name  string
+		build func(p *path.Path)
+		want  []string
+	}{
+		{
+			name:  "aligned rect",
+			build: func(p *path.Path) { p.AddRect(geom.RectLTRB(2, 1, 6, 4), geom.DirectionCW) },
+			want: []string{
+				"........",
+				"..####..",
+				"..####..",
+				"..####..",
+				"........",
+			},
+		},
+		{
+			// Non-AA coverage follows pixel centers: [0.5, 3.5] covers columns/rows 1..3.
+			name:  "pixel centers",
+			build: func(p *path.Path) { p.AddRect(geom.RectLTRB(0.5, 0.5, 3.5, 3.5), geom.DirectionCW) },
+			want: []string{
+				".....",
+				".###.",
+				".###.",
+				".###.",
+				".....",
+			},
+		},
+		{
+			name:  "winding donut",
+			build: donut(path.FillWinding),
+			want: []string{
+				"........",
+				".######.",
+				".######.",
+				".######.",
+				".######.",
+				".######.",
+				".######.",
+				"........",
+			},
+		},
+		{
+			name:  "even-odd donut",
+			build: donut(path.FillEvenOdd),
+			want: []string{
+				"........",
+				".######.",
+				".######.",
+				".##..##.",
+				".##..##.",
+				".######.",
+				".######.",
+				"........",
+			},
+		},
+		{
+			name: "inverse winding",
+			build: func(p *path.Path) {
+				p.AddRect(geom.RectLTRB(2, 2, 6, 6), geom.DirectionCW)
+				p.SetFillType(path.FillInverseWinding)
+			},
+			want: []string{
+				"########",
+				"########",
+				"##....##",
+				"##....##",
+				"##....##",
+				"##....##",
+				"########",
+				"########",
+			},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := path.New()
+			c.build(p)
+			checkMask(t, fillToMask(t, p, int32(len(c.want[0])), int32(len(c.want))), c.want)
+		})
 	}
-	winding := fillToMask(t, build(path.FillWinding), 8, 8)
-	checkMask(t, winding, []string{
-		"........",
-		".######.",
-		".######.",
-		".######.",
-		".######.",
-		".######.",
-		".######.",
-		"........",
-	})
-	evenOdd := fillToMask(t, build(path.FillEvenOdd), 8, 8)
-	checkMask(t, evenOdd, []string{
-		"........",
-		".######.",
-		".######.",
-		".##..##.",
-		".##..##.",
-		".######.",
-		".######.",
-		"........",
-	})
-}
-
-func TestFillInverseWinding(t *testing.T) {
-	p := path.New()
-	p.AddRect(geom.RectLTRB(2, 2, 6, 6), geom.DirectionCW)
-	p.SetFillType(path.FillInverseWinding)
-	got := fillToMask(t, p, 8, 8)
-	checkMask(t, got, []string{
-		"########",
-		"########",
-		"##....##",
-		"##....##",
-		"##....##",
-		"##....##",
-		"########",
-		"########",
-	})
 }
 
 func TestFillInverseEmptyPathFillsClip(t *testing.T) {

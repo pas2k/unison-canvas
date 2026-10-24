@@ -37,26 +37,6 @@ func TestQuickInverseSign(t *testing.T) {
 	}
 }
 
-// TestAnalyticUpdateLineDYUsesFDot6Slope pins the reference convention: updateLine converts the slope to FDot6 before
-// the inverse lookup, which for a slope inside the table's reach yields the true reciprocal slope AnalyticEdge.DY
-// documents. 0.5 of x over 8 of y has reciprocal slope 16.
-func TestAnalyticUpdateLineDYUsesFDot6Slope(t *testing.T) {
-	const x1 = FixedOne / 2
-	const y1 = 8 * FixedOne
-	slope := quickDiv(FixedToFDot6(x1), FixedToFDot6(y1))
-	var e AnalyticEdge
-	e.Winding = WindingCW
-	if !e.updateLine(0, 0, x1, y1, slope) {
-		t.Fatal("updateLine rejected a non-degenerate segment")
-	}
-	if want := quickInverse(FixedToFDot6(FixedAbs(slope))); e.DY != want {
-		t.Fatalf("updateLine DY = %d, want %d (the FDot6-converted slope)", e.DY, want)
-	}
-	if want := 16 * FixedOne; e.DY != want {
-		t.Fatalf("updateLine DY = %d, want %d (dy/dx for 0.5 over 8)", e.DY, want)
-	}
-}
-
 // setLineQuantize reproduces SetLine's endpoint quantization (times 4, to FDot6, to Fixed, back down, y snapped) so a
 // test can drive updateLine over the exact same fixed-point endpoints SetLine derived.
 func setLineQuantize(p geom.Point) (x, y Fixed) {
@@ -68,18 +48,21 @@ func setLineQuantize(p geom.Point) (x, y Fixed) {
 }
 
 // TestAnalyticSetLineDYMatchesUpdateLine pins that SetLine and updateLine derive DY the same way, across the
-// quickInverse branch, the quickDiv branch, and the vertical MaxInt32 case. SetLine once handed quickInverse the raw
-// 16.16 slope, so a line edge's DY was 1024x smaller than a curve segment's for the same geometry and 1024x off the
-// abs(1/DX) contract on AnalyticEdge.DY, which feeds partialTriangleToAlpha.
+// quickInverse branch, the quickDiv branch, and the vertical MaxInt32 case, and where wantDY is set, that both yield
+// the abs(1/DX) in Fixed that AnalyticEdge.DY documents. SetLine once handed quickInverse the raw 16.16 slope, so a
+// line edge's DY was 1024x smaller than a curve segment's for the same geometry and 1024x off that contract, which
+// feeds partialTriangleToAlpha.
 func TestAnalyticSetLineDYMatchesUpdateLine(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		p0, p1 geom.Point
+		wantDY Fixed
 	}{
 		// 6/256 of x (exactly representable at SetLine's 1/256 px quantization) over 190 of y: near-vertical, the
 		// case where the two conventions used to diverge.
 		{name: "near-vertical", p0: geom.Pt(10, 10), p1: geom.Pt(10.0234375, 200)},
-		{name: "shallow", p0: geom.Pt(10, 10), p1: geom.Pt(10.5, 18)},
+		// 0.5 of x over 8 of y is inside the inverse table's reach and has reciprocal slope 16.
+		{name: "shallow", p0: geom.Pt(10, 10), p1: geom.Pt(10.5, 18), wantDY: 16 * FixedOne},
 		{name: "diagonal", p0: geom.Pt(4, 4), p1: geom.Pt(84, 84)},
 		{name: "steep", p0: geom.Pt(4, 4), p1: geom.Pt(84, 12)},
 		{name: "vertical", p0: geom.Pt(10, 10), p1: geom.Pt(10, 90)},
@@ -108,6 +91,9 @@ func TestAnalyticSetLineDYMatchesUpdateLine(t *testing.T) {
 			}
 			if line.DY != curve.DY {
 				t.Fatalf("SetLine DY = %d but updateLine DY = %d for slope %d", line.DY, curve.DY, slope)
+			}
+			if tc.wantDY != 0 && line.DY != tc.wantDY {
+				t.Fatalf("DY = %d, want %d (dy/dx)", line.DY, tc.wantDY)
 			}
 		})
 	}
@@ -284,17 +270,5 @@ func TestCurvePieceDropTestUnchangedOnSkiasGrid(t *testing.T) {
 				t.Errorf("setCubic kept=%v for y %v..%v at SkiaSnapAccuracy, want %v", got, y0, y1, !skiaDrops)
 			}
 		}
-	}
-}
-
-// TestAnalyticSetLineDYIsReciprocalSlope checks the contract itself, not just agreement: for a slope the inverse table
-// covers, DY is abs(1/DX) in Fixed. 0.5 of x over 8 of y has reciprocal slope 16.
-func TestAnalyticSetLineDYIsReciprocalSlope(t *testing.T) {
-	var e AnalyticEdge
-	if !e.SetLine(geom.Pt(10, 10), geom.Pt(10.5, 18)) {
-		t.Fatal("SetLine rejected a non-degenerate edge")
-	}
-	if want := 16 * FixedOne; e.DY != want {
-		t.Fatalf("SetLine DY = %d, want %d (dy/dx for 0.5 over 8)", e.DY, want)
 	}
 }

@@ -26,10 +26,3 @@ func TestNewShaderConstructor(t *testing.T) {
 		t.Error("shader mask filter with a nil shader: want nil")
 	}
 }
-
-// TestNewClipConstructor verifies NewClip builds the clip table filter.
-func TestNewClipConstructor(t *testing.T) {
-	if mf := NewClip(64, 192); mf == nil {
-		t.Error("clip table mask filter: want non-nil")
-	}
-}

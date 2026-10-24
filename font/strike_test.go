@@ -32,70 +32,64 @@ func TestPackedGlyphID(t *testing.T) {
 		t.Fatalf("bare pack should have zero subpixel offsets")
 	}
 
-	// The X sub-pixel field quantizes the fractional position into quarters; the packing expects the rounding constant
-	// to have been added already (the glyph-run painters add HalfAxisSampleFreq).
-	mask := geom.IPoint{X: 3, Y: 0}
+	// Each sub-pixel field quantizes the fractional position into quarters; the packing expects the rounding constant
+	// to have been added already (the glyph-run painters add HalfAxisSampleFreq). The Y lane is selected by the
+	// unaligned spec (baseline snapping off) and the Y-aligned one (90-degree-rotated text), and canvas/text.go and
+	// gpu/text/subrun.go pack every glyph through the strike's field mask.
 	cases := []struct {
 		frac float32
 		want float32
 	}{
 		{frac: 0.0, want: 0}, {frac: 0.24, want: 0}, {frac: 0.26, want: 0.25}, {frac: 0.51, want: 0.5}, {frac: 0.76, want: 0.75}, {frac: 0.99, want: 0.75},
 	}
-	for _, c := range cases {
-		p = PackGlyphIDPoint(7, geom.Pt(10+c.frac, 3), mask)
-		if p.GlyphID() != 7 {
-			t.Fatalf("frac %v: glyph ID %d", c.frac, p.GlyphID())
-		}
-		if got := p.SubXOffset(); got != c.want {
-			t.Errorf("frac %v: sub-x %v, want %v", c.frac, got, c.want)
-		}
-		if p.SubYOffset() != 0 {
-			t.Errorf("frac %v: sub-y %v, want 0 (masked)", c.frac, p.SubYOffset())
-		}
-	}
-
-	// Negative positions floor correctly (the [0,2) range trick).
-	p = PackGlyphIDPoint(7, geom.Pt(-9.74, 0), mask) // fractional part 0.26
-	if got := p.SubXOffset(); got != 0.25 {
-		t.Errorf("negative pos: sub-x %v, want 0.25", got)
-	}
-}
-
-// TestPackedGlyphIDSubY is TestPackedGlyphID for the sub-pixel Y lane, which the X-only mask above never reaches. The
-// unaligned spec (baseline snapping off) and the Y-aligned one (90-degree-rotated text) select it, and canvas/text.go
-// and gpu/text/subrun.go pack every glyph through the strike's field mask. Its field sits directly above the 16-bit
-// glyph ID, so a wrong shift spills sub-y bits into the ID and the strike resolves a different glyph, which is why the
-// packed values are pinned against literals rather than the shift constant the packing uses.
-func TestPackedGlyphIDSubY(t *testing.T) {
-	yMask := geom.IPoint{Y: 3 << packedSubPixelYShift}
-	cases := []struct {
-		frac float32
-		want float32
+	for _, lane := range []struct {
+		name string
+		mask geom.IPoint
+		y    bool
 	}{
-		{frac: 0.0, want: 0}, {frac: 0.24, want: 0}, {frac: 0.26, want: 0.25}, {frac: 0.51, want: 0.5}, {frac: 0.76, want: 0.75}, {frac: 0.99, want: 0.75},
-	}
-	for _, c := range cases {
-		p := PackGlyphIDPoint(7, geom.Pt(3, 10+c.frac), yMask)
-		if p.GlyphID() != 7 {
-			t.Fatalf("frac %v: glyph ID %d", c.frac, p.GlyphID())
+		{name: "x", mask: geom.IPoint{X: 3}},
+		{name: "y", mask: geom.IPoint{Y: 3 << packedSubPixelYShift}, y: true},
+	} {
+		// at places v on the lane's axis and other on the masked-off one.
+		at := func(v, other float32) geom.Point {
+			if lane.y {
+				return geom.Pt(other, v)
+			}
+			return geom.Pt(v, other)
 		}
-		if got := p.SubYOffset(); got != c.want {
-			t.Errorf("frac %v: sub-y %v, want %v", c.frac, got, c.want)
+		// offsets returns the lane's sub-pixel offset and the masked-off one.
+		offsets := func(p PackedGlyphID) (on, off float32) {
+			if lane.y {
+				return p.SubYOffset(), p.SubXOffset()
+			}
+			return p.SubXOffset(), p.SubYOffset()
 		}
-		if got := p.SubXOffset(); got != 0 {
-			t.Errorf("frac %v: sub-x %v, want 0 (masked)", c.frac, got)
+		for _, c := range cases {
+			p = PackGlyphIDPoint(7, at(10+c.frac, 3), lane.mask)
+			if p.GlyphID() != 7 {
+				t.Fatalf("%s lane, frac %v: glyph ID %d", lane.name, c.frac, p.GlyphID())
+			}
+			on, off := offsets(p)
+			if on != c.want {
+				t.Errorf("%s lane, frac %v: sub-pixel offset %v, want %v", lane.name, c.frac, on, c.want)
+			}
+			if off != 0 {
+				t.Errorf("%s lane, frac %v: other offset %v, want 0 (masked)", lane.name, c.frac, off)
+			}
 		}
-	}
 
-	// Negative positions floor correctly on this lane too.
-	if got := PackGlyphIDPoint(7, geom.Pt(0, -9.74), yMask).SubYOffset(); got != 0.25 {
-		t.Errorf("negative pos: sub-y %v, want 0.25", got)
+		// Negative positions floor correctly (the [0,2) range trick).
+		if on, _ := offsets(PackGlyphIDPoint(7, at(-9.74, 0), lane.mask)); on != 0.25 { // fractional part 0.26
+			t.Errorf("%s lane, negative pos: sub-pixel offset %v, want 0.25", lane.name, on)
+		}
 	}
 
 	// The two lanes are independent and neither may reach the glyph-ID field: the largest glyph ID with both sub-pixel
-	// fields saturated occupies exactly bits [19:0] — sub-x in [1:0], the ID in [17:2], sub-y in [19:18].
+	// fields saturated occupies exactly bits [19:0] — sub-x in [1:0], the ID in [17:2], sub-y in [19:18]. A wrong shift
+	// spills sub-y bits into the ID and the strike resolves a different glyph, which is why the packed values are
+	// pinned against literals rather than the shift constant the packing uses.
 	both := geom.IPoint{X: 3, Y: 3 << packedSubPixelYShift}
-	p := PackGlyphIDPoint(0xFFFF, geom.Pt(1.76, 2.76), both)
+	p = PackGlyphIDPoint(0xFFFF, geom.Pt(1.76, 2.76), both)
 	if p.GlyphID() != 0xFFFF || p.SubXOffset() != 0.75 || p.SubYOffset() != 0.75 {
 		t.Errorf("saturated pack = gid %#x sub (%v,%v), want 0xffff (0.75,0.75)",
 			p.GlyphID(), p.SubXOffset(), p.SubYOffset())
@@ -304,31 +298,44 @@ func TestStrikeMaskGeneration(t *testing.T) {
 	}
 }
 
-// TestAtlasActionSizeGates drives the two atlas-bound mask actions across their bound: ActionDirectMask takes glyphs up
-// to SideTooBigForAtlas, ActionMask stops two pixels short of it for the bilerp padding, and both must reject
-// everything above. The text sizes bracket the crossing ('A' grows a bit under a pixel per point), so the walk sees
-// each action flip, with ActionMask flipping first, which is the point of the -2.
+// TestAtlasActionSizeGates drives the atlas-bound mask actions across their bound: ActionDirectMask takes glyphs up to
+// SideTooBigForAtlas, ActionMask stops two pixels short of it for the bilerp padding, ActionSDFT judges the padded SDF
+// dimensions rather than the A8 ones the field is generated from, and all must reject everything above. The text sizes
+// bracket the crossing ('A' grows a bit under a pixel per point), so the walk sees each action flip, with ActionMask
+// flipping before ActionDirectMask, which is the point of the -2.
 func TestAtlasActionSizeGates(t *testing.T) {
 	tf := loadTypeface(t, "Roboto-Regular.ttf", 0)
 	gid := tf.UnicharToGlyph('A')
 	if gid == 0 {
 		t.Fatal("Roboto should map 'A'")
 	}
+	a8Strike := func(size float32) *Strike {
+		spec := MakeWithNoDeviceSpec(NewFont(tf, size, 1, 0), nil)
+		return spec.FindOrCreateStrike()
+	}
+	// The SDF strike font is what gpu/text's GetSDFFont produces: EdgingAntiAlias, no subpixel.
+	sdfStrike := func(size float32) *Strike {
+		f := NewFont(tf, size, 1, 0)
+		f.SetEdging(EdgingAntiAlias)
+		f.SetSubpixel(false)
+		spec := MakeSDFTMaskSpec(f, nil)
+		return spec.FindOrCreateStrike()
+	}
 	tests := []struct {
+		strike      func(size float32) *Strike
 		name        string
 		action      ActionType
 		limit       int32
 		firstReject float32
 	}{
-		{name: "kDirectMask", action: ActionDirectMask, limit: SideTooBigForAtlas},
-		{name: "kMask", action: ActionMask, limit: SideTooBigForAtlas - 2},
+		{name: "kDirectMask", action: ActionDirectMask, strike: a8Strike, limit: SideTooBigForAtlas},
+		{name: "kMask", action: ActionMask, strike: a8Strike, limit: SideTooBigForAtlas - 2},
+		{name: "kSDFT", action: ActionSDFT, strike: sdfStrike, limit: SideTooBigForAtlas},
 	}
 	for i, test := range tests {
 		accepted, rejected := 0, 0
 		for size := float32(320); size <= 400; size += 4 {
-			spec := MakeWithNoDeviceSpec(NewFont(tf, size, 1, 0), nil)
-			strike := spec.FindOrCreateStrike()
-			g, action := strike.DigestFor(test.action, PackGlyphID(gid))
+			g, action := test.strike(size).DigestFor(test.action, PackGlyphID(gid))
 			want := GlyphActionReject
 			if g.MaxDimension() <= test.limit {
 				want = GlyphActionAccept

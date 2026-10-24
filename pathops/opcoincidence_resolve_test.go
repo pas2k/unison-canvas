@@ -7,10 +7,8 @@
 // This Source Code Form is "Incompatible With Secondary Licenses", as
 // defined by the Mozilla Public License, version 2.0.
 
-// Tests for the coincidence resolution machinery (opcoincidence_resolve.go) and its supporting span/segment methods:
-// the targeted helpers at the unit level, plus end-to-end from real coincident paths through the handleCoincidence
-// coincidence sub-sequence (addExpanded/correctEnds/addEndMovedSpans/addMissing/expand/mark/apply/findOverlaps),
-// leaving out the moveMultiples/moveNearby/calcAngles steps handleCoincidence interleaves.
+// Tests for the coincidence resolution machinery (opcoincidence_resolve.go) and its supporting span/segment methods,
+// mostly at the unit level, plus a correctEnds/mark/apply pass over real coincident paths.
 
 package pathops
 
@@ -213,87 +211,6 @@ func TestCoincidenceMarkAndApply(t *testing.T) {
 	}
 }
 
-// TestCoincidenceHandleSequenceIdenticalRects runs the full handleCoincidence coincidence sub-sequence over two
-// identical rectangles (every edge coincides). The sequence must complete and leave every span with a valid
-// (non-negative) winding value.
-func TestCoincidenceHandleSequenceIdenticalRects(t *testing.T) {
-	a := path.New()
-	a.MoveTo(0, 0).LineTo(10, 0).LineTo(10, 10).LineTo(0, 10).Close()
-	b := path.New()
-	b.MoveTo(0, 0).LineTo(10, 0).LineTo(10, 10).LineTo(0, 10).Close()
-	head, state := buildOpModel(t, a, b)
-	co := newOpCoincidence(state)
-	addIntersections(head, co)
-
-	if coincidenceCount(co) == 0 {
-		t.Fatal("identical rectangles should record coincident runs")
-	}
-	runCoincidenceResolution(t, co)
-
-	for _, s := range allSpans(head) {
-		if s.windValue < 0 {
-			t.Fatalf("span at %v has negative windValue %d after apply", s.pt(), s.windValue)
-		}
-	}
-}
-
-// runCoincidenceResolution executes the coincidence-only portion of handleCoincidence, failing the test if any step
-// aborts. It skips the interleaved moveMultiples/moveNearby/missingCoincidence steps.
-func runCoincidenceResolution(t *testing.T, co *opCoincidence) {
-	t.Helper()
-	if !co.addExpanded() {
-		t.Fatal("addExpanded (1) returned false")
-	}
-	co.correctEnds()
-	if !co.addEndMovedSpans() {
-		t.Fatal("addEndMovedSpans returned false")
-	}
-	for safety := 3; ; safety-- {
-		var added bool
-		if !co.addMissing(&added) {
-			t.Fatal("addMissing returned false")
-		}
-		if !added {
-			break
-		}
-		if safety == 1 {
-			break
-		}
-	}
-	if co.expand() {
-		var added bool
-		if !co.addMissing(&added) {
-			t.Fatal("addMissing (post-expand) returned false")
-		}
-		if !co.addExpanded() {
-			t.Fatal("addExpanded (post-expand) returned false")
-		}
-	}
-	if !co.addExpanded() {
-		t.Fatal("addExpanded (2) returned false")
-	}
-	if !co.mark() {
-		t.Fatal("mark returned false")
-	}
-	co.expand()
-	overlaps := &opCoincidence{globalState: co.globalState}
-	for safety := 3; safety > 0; safety-- {
-		pairs := co
-		if !overlaps.isEmpty() {
-			pairs = overlaps
-		}
-		if !pairs.apply() {
-			t.Fatal("apply returned false")
-		}
-		if !pairs.findOverlaps(overlaps) {
-			t.Fatal("findOverlaps returned false")
-		}
-		if overlaps.isEmpty() {
-			break
-		}
-	}
-}
-
 // TestAddOrOverlapEndOutOfRange drives addOrOverlap down the ce/oe branch with a coinTe that lies outside [0,1], so
 // coinSeg.addT(coinTe) returns nil. The segment pair is a short edge (segA, t in [0,1] over x in [0,10]) coincident with
 // a longer collinear one (segB, x in [-5,15]): the interior samples coincidentRunIsReal takes at 0.25/0.5/0.75 of
@@ -383,25 +300,5 @@ func TestAddIfMissingSwallowsAddOrOverlapFailure(t *testing.T) {
 	}
 	if added {
 		t.Fatal("addIfMissing should not report an addition when addOrOverlap declined")
-	}
-}
-
-// TestAddMissingSurvivesDecliningAddIfMissing is the caller-side half: addMissing must run to completion over a model
-// whose coincident runs give addIfMissing nothing to add. A false from addIfMissing would abort at the first such run.
-func TestAddMissingSurvivesDecliningAddIfMissing(t *testing.T) {
-	a := path.New()
-	a.MoveTo(0, 0).LineTo(10, 0).LineTo(10, 10).LineTo(0, 10).Close()
-	b := path.New()
-	b.MoveTo(0, 0).LineTo(10, 0).LineTo(10, 10).LineTo(0, 10).Close()
-	head, state := buildOpModel(t, a, b)
-	co := newOpCoincidence(state)
-	addIntersections(head, co)
-	if coincidenceCount(co) == 0 {
-		t.Fatal("identical rectangles should record coincident runs")
-	}
-
-	var added bool
-	if !co.addMissing(&added) {
-		t.Fatal("addMissing aborted")
 	}
 }

@@ -23,10 +23,14 @@ import (
 )
 
 // TestDeviceColorFilterLayerDrawsBackAsImage exercises the color-filter saveLayer lane: a layer whose paint carries a
-// color filter renders on a raster device and is drawn back as a color-filtered Image XObject.
+// color filter renders on a raster device and is drawn back as a color-filtered Image XObject under the layer paint's
+// alpha. The draw-back goes through internalDrawImageRect's scoped content entry, which emits the alpha as /ca (the
+// image-filter path instead bakes alpha into the image via a DstIn color filter, so /ca is the color-filter
+// draw-back's distinctive signature).
 func TestDeviceColorFilterLayerDrawsBackAsImage(t *testing.T) {
 	lp := canvas.NewPaint()
 	lp.ColorFilter = colorfilter.NewBlend(colorcore.ARGB(255, 0, 0, 255), raster.BlendSrc)
+	lp.Color = lp.Color.WithAlpha(128)
 	data := renderPDFUncompressed(t, 40, 40, func(c *canvas.Canvas) {
 		c.SaveLayer(nil, lp)
 		red := canvas.NewPaint()
@@ -46,6 +50,9 @@ func TestDeviceColorFilterLayerDrawsBackAsImage(t *testing.T) {
 	// The layer geometry was rasterized, not re-emitted as vector ops in a transparency group.
 	if anyStreamContains(data, "10 10 20 20 re") {
 		t.Error("layer rect leaked as vector geometry; expected a rasterized image")
+	}
+	if !anyObjectContains(data, "/ca .502") {
+		t.Errorf("layer alpha (~0.5) not applied to the color-filter layer draw-back; objects=%v", dictObjects(data))
 	}
 }
 
@@ -73,30 +80,5 @@ func TestDeviceImageFilterLayerDrawsFilteredImageBack(t *testing.T) {
 	// The layer rect was rendered into the raster layer and blurred, not re-emitted as vector ops.
 	if anyStreamContains(data, "20 20 20 20 re") {
 		t.Error("layer rect leaked as vector geometry; expected a filtered raster image")
-	}
-}
-
-// TestDeviceColorFilterLayerAppliesAlpha confirms the color-filter layer draw-back honors the layer paint's alpha: the
-// raster layer is drawn back through internalDrawImageRect's scoped content entry, which emits the /ca ExtGState (the
-// image-filter path instead bakes alpha into the image via a DstIn color filter, so /ca is the color-filter draw-back's
-// distinctive signature).
-func TestDeviceColorFilterLayerAppliesAlpha(t *testing.T) {
-	lp := canvas.NewPaint()
-	lp.ColorFilter = colorfilter.NewBlend(colorcore.ARGB(255, 0, 0, 255), raster.BlendSrc)
-	lp.Color = lp.Color.WithAlpha(128)
-	data := renderPDF(t, 40, 40, func(c *canvas.Canvas) {
-		c.SaveLayer(nil, lp)
-		red := canvas.NewPaint()
-		red.Color = colorcore.ARGB(255, 255, 0, 0)
-		c.DrawRect(geom.RectLTRB(10, 10, 30, 30), red)
-		c.Restore()
-	})
-	validatePDF(t, data)
-	if n := countSubstr(data, "/Subtype /Image"); n < 1 {
-		t.Fatalf("color-filter layer produced no Image XObject; got %d", n)
-	}
-	if !anyObjectContains(data, "/ca .502") {
-		t.Errorf("layer alpha (~0.5) not applied to the color-filter layer draw-back; objects=%v",
-			dictObjects(data))
 	}
 }

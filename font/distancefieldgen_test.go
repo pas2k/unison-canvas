@@ -104,6 +104,32 @@ func TestGenerateDistanceFieldSolidSquare(t *testing.T) {
 	if edgeInside < 128 || edgeOutside > 128 {
 		t.Errorf("threshold not at the boundary: inside=%d outside=%d", edgeInside, edgeOutside)
 	}
+
+	// The outer band is where upstream Skia's shifted backward-in-y start disagrees with this one, inside the region
+	// DistanceFieldInset trims as well as outside it. What keeps that invisible in a rendered glyph is this margin: the
+	// band sits whole texels from the zero crossing, far outside the smoothstep band the shader reads around
+	// DistanceFieldThreshold. Inverting the packing: zero distance is at 128 and the byte range spans
+	// 2*DistanceFieldMagnitude texels.
+	const wantMargin = 2 // texels; the shader's smoothstep band spans well under one
+	nonClamped := 0
+	for y := range dfW {
+		for x := range dfW {
+			if x >= 2 && x < dfW-2 && y >= 2 && y < dfW-2 {
+				continue // not the outer band
+			}
+			if d := DistanceFieldMagnitude - float32(at(x, y))*(2*DistanceFieldMagnitude)/256; d < wantMargin {
+				t.Errorf("outer-band texel (%d,%d) is %v texels outside, want at least %v", x, y, d, wantMargin)
+			}
+			if at(x, y) != 0 {
+				nonClamped++
+			}
+		}
+	}
+	// Non-vacuity: a band entirely clamped would satisfy the margin above and leave the mirror checks blind exactly
+	// where the backward-pass window matters.
+	if nonClamped == 0 {
+		t.Error("the outer band is entirely clamped; it exercises no propagation at all")
+	}
 }
 
 // TestSetLengthFastIsExactlyNormalized pins the precision setLengthFast returns at. The name is upstream Skia's, where
@@ -139,41 +165,6 @@ func TestSetLengthFastIsExactlyNormalized(t *testing.T) {
 		if got := setLengthFast(p, 1); got != (geom.Point{}) {
 			t.Errorf("setLengthFast(%v, 1) = %v, want the zero point", p, got)
 		}
-	}
-}
-
-// TestDistanceFieldOuterBandIsSaturated pins the margin the backward-in-y start's comment rests on. Upstream Skia's
-// shifted start denies the rightmost interior column of every row its backward propagation, and the texels the two
-// starts disagree about land in the field's outer band — inside the region DistanceFieldInset trims as well as outside
-// it. What keeps that invisible in a rendered glyph is not the trim but this margin: those texels already sit whole
-// texels away from the zero crossing, far outside the smoothstep band the shader reads around DistanceFieldThreshold.
-func TestDistanceFieldOuterBandIsSaturated(t *testing.T) {
-	const size = 8
-	df, dfW := solidSquareField(size)
-	// Invert the packing: zero distance is at 128 and the byte range spans 2*DistanceFieldMagnitude texels.
-	distanceAt := func(x, y int) float32 {
-		return DistanceFieldMagnitude - float32(df[y*dfW+x])*(2*DistanceFieldMagnitude)/256
-	}
-	const wantMargin = 2 // texels; the shader's smoothstep band spans well under one
-	nonClamped := 0
-	for y := range dfW {
-		for x := range dfW {
-			if x >= 2 && x < dfW-2 && y >= 2 && y < dfW-2 {
-				continue // not the outer band
-			}
-			if d := distanceAt(x, y); d < wantMargin {
-				t.Errorf("outer-band texel (%d,%d) is %v texels outside, want at least %v", x, y, d, wantMargin)
-			}
-			if df[y*dfW+x] != 0 {
-				nonClamped++
-			}
-		}
-	}
-	// Non-vacuity: the band must carry real propagated distances, not a uniform clamp. A band that were entirely
-	// clamped would satisfy the margin above — and would make the mirror-invariance test blind exactly where the
-	// backward-pass window matters.
-	if nonClamped == 0 {
-		t.Error("the outer band is entirely clamped; it exercises no propagation at all")
 	}
 }
 

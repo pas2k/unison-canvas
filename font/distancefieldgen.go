@@ -415,7 +415,7 @@ func generateDistanceFieldFromImage(distanceField, paddedImage []uint8, width, h
 	// the previous row's last column. Over 300 masks the two starts differ by up to 3/255, and not only in the padding
 	// DistanceFieldInset trims, but only in texels ~3.9 texels from the glyph against a DistanceFieldMagnitude of 4:
 	// those are pinned at the far end of the packed range, nowhere near the smoothstep band the shader reads around the
-	// zero crossing (TestDistanceFieldOuterBandIsSaturated pins that margin). Mirroring the passes costs nothing and
+	// zero crossing (TestGenerateDistanceFieldSolidSquare pins that margin). Mirroring the passes costs nothing and
 	// does not need the argument at all, so the start is fixed here rather than ported.
 	curr = dataWidth*(dataHeight-2) + 1 // skip the outer buffer
 	e = dataWidth*(dataHeight-2) + 1

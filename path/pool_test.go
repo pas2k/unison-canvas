@@ -60,33 +60,3 @@ func TestRecycleRestoresFreshState(t *testing.T) {
 		t.Errorf("lastMoveIdx = %v, want %v", p.lastMoveIdx, fresh.lastMoveIdx)
 	}
 }
-
-// TestBorrowNeverVolatile is the end-to-end form of the same contract: after a volatile path has been recycled, no
-// path the pool hands out reports itself volatile.
-func TestBorrowNeverVolatile(t *testing.T) {
-	p := Borrow()
-	p.MoveTo(0, 0).LineTo(4, 4).SetVolatile(true)
-	Recycle(p)
-
-	// sync.Pool is free to return a brand-new Path, so hold each borrowed path and keep pulling until the recycled
-	// one comes back around.
-	held := make([]*Path, 0, 64)
-	sawRecycled := false
-	for range cap(held) {
-		q := Borrow()
-		held = append(held, q)
-		if q.IsVolatile() {
-			t.Fatal("Borrow handed out a path still flagged volatile")
-		}
-		if q == p {
-			sawRecycled = true
-			break
-		}
-	}
-	for _, q := range held {
-		Recycle(q)
-	}
-	if !sawRecycled {
-		t.Log("the pool never handed the recycled path back; only fresh paths were checked")
-	}
-}

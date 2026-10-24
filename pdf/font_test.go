@@ -122,9 +122,11 @@ func TestTextEmitsCIDFontType2(t *testing.T) {
 	}
 	// The content references a /F font resource at the drawn text size.
 	mustContain(t, content, " 20 Tf\n")
-	if !strings.Contains(content, "/F") {
-		t.Errorf("content missing /F font resource\n%s", content)
+	i := strings.Index(content, "/F")
+	if i < 0 {
+		t.Fatalf("content missing /F font resource\n%s", content)
 	}
+	fontName := content[i : i+strings.IndexAny(content[i:], " \n")]
 
 	// The Type0 wrapper: Identity-H encoding, a descendant font, and a ToUnicode CMap.
 	type0 := dictContaining(data, "/Subtype /Type0", "/Encoding /Identity-H")
@@ -136,6 +138,20 @@ func TestTextEmitsCIDFontType2(t *testing.T) {
 			t.Errorf("Type0 dict missing %s: %s", key, type0)
 		}
 	}
+	// The ToUnicode CMap (a FlateDecode stream) maps the drawn glyphs back to U+0048 ('H') and U+0069 ('i').
+	var cmap string
+	for _, s := range allStreamContents(data) {
+		if strings.Contains(s, "begincmap") {
+			cmap = s
+		}
+	}
+	if cmap == "" {
+		t.Fatal("no ToUnicode CMap stream")
+	}
+	mustContain(t, cmap, "/CMapType 2 def")
+	mustContain(t, cmap, "beginbfchar")
+	mustContain(t, cmap, "0048") // 'H'
+	mustContain(t, cmap, "0069") // 'i'
 
 	// The CIDFontType2 descendant with the Identity CIDToGIDMap and CIDSystemInfo.
 	cid := dictContaining(data, "/Subtype /CIDFontType2")
@@ -158,10 +174,18 @@ func TestTextEmitsCIDFontType2(t *testing.T) {
 			t.Errorf("FontDescriptor missing %s: %s", key, desc)
 		}
 	}
+	// The FontFile2 stream carries the full (unsubsetted) font program, so /Length1 is the whole file's size.
+	raw, err := os.ReadFile("../font/testdata/Roboto-Regular.ttf")
+	if err != nil {
+		t.Fatalf("read font: %v", err)
+	}
+	if !bytes.Contains(data, []byte("/Length1 "+strconv.Itoa(len(raw)))) {
+		t.Errorf("no FontFile2 stream with /Length1 %d", len(raw))
+	}
 
-	// A /Font resource entry is present in some /Resources dict.
-	if dictContaining(data, "/Font") == "" {
-		t.Error("no /Resources /Font subdict")
+	// The /F name selected by Tf is a key of the /Font resource subdict.
+	if dictContaining(data, "/Font", fontName+" ") == "" {
+		t.Errorf("font resource %s not found in any /Resources /Font subdict", fontName)
 	}
 }
 
@@ -197,27 +221,6 @@ func emitToString(o Object) string {
 	var buf stream.MemoryWStream
 	o.emit(&buf)
 	return string(buf.Bytes())
-}
-
-func TestTextEmbedsWholeFontProgram(t *testing.T) {
-	raw, err := os.ReadFile("../font/testdata/Roboto-Regular.ttf")
-	if err != nil {
-		t.Fatalf("read font: %v", err)
-	}
-	tf, err := font.NewTypefaceFromData(raw, 0)
-	if err != nil {
-		t.Fatalf("parse font: %v", err)
-	}
-	f := font.NewFont(tf, 20, 1, 0)
-	paint := canvas.NewPaint()
-	data := renderPDF(t, 200, 100, func(c *canvas.Canvas) {
-		c.DrawSimpleText([]byte("Hi"), font.TextEncodingUTF8, 10, 50, f, paint)
-	})
-	validatePDF(t, data)
-	// The FontFile2 stream carries the full (unsubsetted) font program, so /Length1 is the whole file's size.
-	if !bytes.Contains(data, []byte("/Length1 "+strconv.Itoa(len(raw)))) {
-		t.Errorf("no FontFile2 stream with /Length1 %d", len(raw))
-	}
 }
 
 // TestCollectionFaceEmbedsExtractedProgram covers a typeface loaded from a TrueType collection. /FontFile2 must hold
@@ -267,42 +270,17 @@ func TestCollectionFaceEmbedsExtractedProgram(t *testing.T) {
 	}
 }
 
-func TestTextToUnicodeMapsGlyphs(t *testing.T) {
+func TestTextWidthsAccumulateAcrossDraws(t *testing.T) {
 	tf := loadTestTypeface(t)
-	f := font.NewFont(tf, 24, 1, 0)
+	f := font.NewFont(tf, 16, 1, 0)
 	paint := canvas.NewPaint()
-	data := renderPDF(t, 200, 100, func(c *canvas.Canvas) {
-		c.DrawSimpleText([]byte("Hi"), font.TextEncodingUTF8, 10, 50, f, paint)
+	// Draw text that uses many distinct-width glyphs so the /W array is non-empty.
+	data := renderPDF(t, 400, 100, func(c *canvas.Canvas) {
+		c.DrawSimpleText([]byte("Proportional"), font.TextEncodingUTF8, 10, 50, f, paint)
+		c.DrawSimpleText([]byte("widths vary"), font.TextEncodingUTF8, 10, 80, f, paint)
 	})
 	validatePDF(t, data)
-
-	// The ToUnicode CMap (a FlateDecode stream) maps the drawn glyphs back to U+0048 ('H') and U+0069 ('i').
-	var cmap string
-	for _, s := range allStreamContents(data) {
-		if strings.Contains(s, "begincmap") {
-			cmap = s
-		}
-	}
-	if cmap == "" {
-		t.Fatal("no ToUnicode CMap stream")
-	}
-	mustContain(t, cmap, "/CMapType 2 def")
-	mustContain(t, cmap, "beginbfchar")
-	mustContain(t, cmap, "0048") // 'H'
-	mustContain(t, cmap, "0069") // 'i'
-}
-
-func TestTextFontResourceDedup(t *testing.T) {
-	tf := loadTestTypeface(t)
-	f := font.NewFont(tf, 18, 1, 0)
-	paint := canvas.NewPaint()
-	data := renderPDF(t, 300, 100, func(c *canvas.Canvas) {
-		c.DrawSimpleText([]byte("first"), font.TextEncodingUTF8, 10, 40, f, paint)
-		c.DrawSimpleText([]byte("second"), font.TextEncodingUTF8, 10, 80, f, paint)
-	})
-	validatePDF(t, data)
-
-	// Two draws of the same typeface produce exactly one Type0 font object.
+	// Two draws of the same typeface share exactly one Type0 font object, which is why its widths accumulate.
 	n := 0
 	for _, body := range dictObjects(data) {
 		if strings.Contains(body, "/Subtype /Type0") {
@@ -317,18 +295,6 @@ func TestTextFontResourceDedup(t *testing.T) {
 	if c := strings.Count(content, " Tf\n"); c != 2 {
 		t.Errorf("expected 2 Tf operators, got %d\n%s", c, content)
 	}
-}
-
-func TestTextWidthsAccumulateAcrossDraws(t *testing.T) {
-	tf := loadTestTypeface(t)
-	f := font.NewFont(tf, 16, 1, 0)
-	paint := canvas.NewPaint()
-	// Draw text that uses many distinct-width glyphs so the /W array is non-empty.
-	data := renderPDF(t, 400, 100, func(c *canvas.Canvas) {
-		c.DrawSimpleText([]byte("Proportional"), font.TextEncodingUTF8, 10, 50, f, paint)
-		c.DrawSimpleText([]byte("widths vary"), font.TextEncodingUTF8, 10, 80, f, paint)
-	})
-	validatePDF(t, data)
 	cid := dictContaining(data, "/Subtype /CIDFontType2")
 	if cid == "" {
 		t.Fatal("no CIDFontType2 dict")
@@ -360,25 +326,5 @@ func TestStrokedTextFallsBackToPaths(t *testing.T) {
 	// The glyph outline is stroked (S) — a curve operator confirms real outline geometry was emitted.
 	if !strings.Contains(content, "S\n") && !strings.Contains(content, "B\n") {
 		t.Errorf("expected a stroke/fill operator for the outline\n%s", content)
-	}
-}
-
-func TestTextResourceDictNamesMatch(t *testing.T) {
-	tf := loadTestTypeface(t)
-	f := font.NewFont(tf, 22, 1, 0)
-	paint := canvas.NewPaint()
-	data := renderPDF(t, 200, 100, func(c *canvas.Canvas) {
-		c.DrawSimpleText([]byte("Ok"), font.TextEncodingUTF8, 10, 50, f, paint)
-	})
-	validatePDF(t, data)
-	content := pageContent(t, data)
-	// The /F name selected by Tf must appear in the page's /Font resource subdict.
-	i := strings.Index(content, "/F")
-	if i < 0 {
-		t.Fatalf("no font resource name in content\n%s", content)
-	}
-	name := content[i : i+strings.IndexAny(content[i:], " \n")]
-	if dictContaining(data, name+" ") == "" {
-		t.Errorf("font resource %s not found in any /Resources dict", name)
 	}
 }

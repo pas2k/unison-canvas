@@ -28,42 +28,47 @@ func strokeWith(width float32, c Cap, j Join, miter float32, src *path.Path) *pa
 	return dst
 }
 
-// A horizontal line stroked with butt caps must fill exactly the [x0,x1] x [y-r,y+r] rectangle.
-func TestStrokeLineButt(t *testing.T) {
-	src := (&path.Path{}).MoveTo(10, 40).LineTo(90, 40)
-	dst := strokeWith(6, CapButt, JoinMiter, 4, src)
-	b := dst.Bounds()
-	want := geom.RectLTRB(10, 37, 90, 43)
-	if b != want {
-		t.Fatalf("butt stroke bounds %v want %v", b, want)
-	}
-	if !dst.Contains(50, 39) || !dst.Contains(50, 41) {
-		t.Fatal("interior of stroke band not contained")
-	}
-	if dst.Contains(9, 40) || dst.Contains(91, 40) {
-		t.Fatal("butt caps must not extend past the endpoints")
-	}
-}
-
-// Square caps extend half the width past each endpoint; round caps too (as an arc).
+// A horizontal line stroked with butt caps fills exactly the [x0,x1] x [y-r,y+r] rectangle. Square caps extend half
+// the width past each endpoint; round caps too (as an arc).
 func TestStrokeLineCaps(t *testing.T) {
 	src := (&path.Path{}).MoveTo(10, 40).LineTo(90, 40)
-
-	sq := strokeWith(6, CapSquare, JoinMiter, 4, src)
-	if b, want := sq.Bounds(), geom.RectLTRB(7, 37, 93, 43); b != want {
-		t.Fatalf("square cap bounds %v want %v", b, want)
-	}
-
-	rd := strokeWith(6, CapRound, JoinMiter, 4, src)
-	b := rd.Bounds()
-	if b.Left != 7 || b.Right != 93 {
-		t.Fatalf("round cap bounds %v want left 7 right 93", b)
-	}
-	if !rd.Contains(8, 40) { // inside the round cap
-		t.Fatal("round cap area not contained")
-	}
-	if rd.Contains(7.2, 37.2) { // corner outside the arc but inside the square cap
-		t.Fatal("round cap contains a square-cap corner")
+	for _, c := range []struct {
+		name    string
+		inside  []geom.Point
+		outside []geom.Point
+		bounds  geom.Rect
+		cap     Cap
+	}{
+		{
+			name:    "butt",
+			cap:     CapButt,
+			bounds:  geom.RectLTRB(10, 37, 90, 43),
+			inside:  []geom.Point{{X: 50, Y: 39}, {X: 50, Y: 41}}, // the stroke band
+			outside: []geom.Point{{X: 9, Y: 40}, {X: 91, Y: 40}},  // just past the endpoints
+		},
+		{name: "square", cap: CapSquare, bounds: geom.RectLTRB(7, 37, 93, 43)},
+		{
+			name:    "round",
+			cap:     CapRound,
+			bounds:  geom.RectLTRB(7, 37, 93, 43),
+			inside:  []geom.Point{{X: 8, Y: 40}},     // inside the round cap
+			outside: []geom.Point{{X: 7.2, Y: 37.2}}, // corner outside the arc but inside the square cap
+		},
+	} {
+		dst := strokeWith(6, c.cap, JoinMiter, 4, src)
+		if b := dst.Bounds(); b != c.bounds {
+			t.Errorf("%s cap bounds %v want %v", c.name, b, c.bounds)
+		}
+		for _, p := range c.inside {
+			if !dst.Contains(p.X, p.Y) {
+				t.Errorf("%s cap: %v not contained", c.name, p)
+			}
+		}
+		for _, p := range c.outside {
+			if dst.Contains(p.X, p.Y) {
+				t.Errorf("%s cap: %v contained", c.name, p)
+			}
+		}
 	}
 }
 

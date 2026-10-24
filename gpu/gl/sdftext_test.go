@@ -10,8 +10,7 @@
 // Fake-driver tests for distance-field text: the device text lowering routes large text through the SDFT subrun onto
 // AtlasTextOp's distance-field mask types and GPs, the generated GLSL carries the DF pipeline (multiplier/threshold,
 // derivative-based afwidth, smoothstep — and the per-channel offset lookups plus DistanceAdjust uniform for the LCD
-// variant), the atlas uploads SDF glyphs through the padding-0/inset-2 lane, and the small-text regression gate:
-// axis-aligned small text keeps the bitmap-text GP.
+// variant), and the atlas uploads SDF glyphs through the padding-0/inset-2 lane.
 
 package gl
 
@@ -202,23 +201,22 @@ func TestSDFTextLCDDF(t *testing.T) {
 	if counts("glUniform3f") == 0 {
 		t.Error("expected the DistanceAdjust glUniform3f upload")
 	}
-}
 
-func TestSDFTextSmallTextKeepsBitmapGP(t *testing.T) {
-	// The default-output regression gate: 16px axis-aligned text stays on the direct-mask bitmap-text lane even though
-	// the context supports SDFT.
-	dc := newShaderRecordingContext(t)
-	sdc := newDrawTestSDC(t, dc, 512, 512)
-	defer sdc.Release()
-
-	op := drawSDFTestText(t, sdc, 16, 0, font.EdgingAntiAlias, "hi")
-	if op.maskType != maskTypeGrayscaleCoverage {
-		t.Fatalf("mask type = %d, want grayscale coverage", op.maskType)
+	// appendMultitextureLookupLCD must close the sampler chain with an unconditional else, the way
+	// appendMultitextureLookup does for bitmap text. `distance` is declared uninitialized and texIdx is an interpolated
+	// float varying, so an equality test on the last page leaves `distance` undefined on any interpolation imprecision
+	// and produces garbage LCD-SDF text. With a single active atlas page the emitted lookup must carry no tex-index
+	// comparison at all. numActiveViews is filled in by OnPrepare, so it is only meaningful after the flush above.
+	if op.numActiveViews != 1 {
+		t.Fatalf("active atlas views = %d, want 1 (the single-page case the lookup check pins)",
+			op.numActiveViews)
 	}
-	recCounts = map[string]int{}
-	dc.FlushAndSubmit(false)
-	if _, ok := op.gp.(*bitmapTextGeoProc); !ok {
-		t.Fatalf("gp is %T, want *bitmapTextGeoProc", op.gp)
+	if !strings.Contains(df, "vec3 distance;") {
+		t.Fatalf("expected the uninitialized distance declaration the lookup check guards:\n%s", df)
+	}
+	if lcdTexIndexCompareRE.MatchString(df) {
+		t.Errorf("the last atlas page's lookup is guarded by a tex-index comparison, leaving "+
+			"distance undefined when the comparison fails:\n%s", df)
 	}
 }
 
@@ -267,8 +265,7 @@ func TestGLDeviceTextLaneBoundariesPerOS(t *testing.T) {
 				tc.name, sawAtlasSDF, tc.wantAtlasSDF)
 		}
 
-		// Beyond this variant's max size (the derivation TestGLDeviceTextPathLane uses on the host defaults), text is
-		// path-lane under every threshold.
+		// Beyond this variant's max size, text is path-lane under every threshold.
 		fOver := loadAtlasTestFont(t, "Roboto-Regular.ttf", tc.maxSize+44)
 		chainsOver := sdc.GetOpsTask().NumOpChains()
 		c.DrawTextBlob(makeTestBlob(t, fOver, "Q"), 0, 460, paint)
@@ -335,46 +332,6 @@ func TestSDFTextDFOpsDoNotMergeWithCoverage(t *testing.T) {
 		t.Fatalf("DF glyph count after luminance mismatch = %d, want 3", dfOp.numGlyphs)
 	}
 	dc.FlushAndSubmit(false)
-}
-
-// TestSDFTextLCDLastPageLookupIsUnconditional: appendMultitextureLookupLCD must close the sampler chain with an
-// unconditional else, the way appendMultitextureLookup does for bitmap text. `distance` is declared uninitialized and
-// texIdx is an interpolated float varying, so an equality test on the last page leaves `distance` undefined on any
-// interpolation imprecision and produces garbage LCD-SDF text. With a single active atlas page the emitted lookup must
-// carry no tex-index comparison at all.
-func TestSDFTextLCDLastPageLookupIsUnconditional(t *testing.T) {
-	dc := newShaderRecordingContext(t)
-	sdc := lcdTestSDC(t, dc, 512, 512)
-	defer sdc.Release()
-
-	op := drawSDFTestText(t, sdc, 200, 30, font.EdgingSubpixelAntiAlias, "L")
-	if op.maskType != maskTypeLCDDistanceField {
-		t.Fatalf("mask type = %d, want LCD distance field", op.maskType)
-	}
-
-	frags := flushAndFragmentSources(dc)
-	// numActiveViews is filled in by OnPrepare, so it is only meaningful after the flush above.
-	if op.numActiveViews != 1 {
-		t.Fatalf("active atlas views = %d, want 1 (the single-page case this test pins)",
-			op.numActiveViews)
-	}
-	var df string
-	for _, src := range frags {
-		if strings.Contains(src, "DistanceAdjust") {
-			df = src
-			break
-		}
-	}
-	if df == "" {
-		t.Fatal("no fragment shader carries the LCD DistanceAdjust uniform")
-	}
-	if !strings.Contains(df, "vec3 distance;") {
-		t.Fatalf("expected the uninitialized distance declaration this test guards:\n%s", df)
-	}
-	if lcdTexIndexCompareRE.MatchString(df) {
-		t.Errorf("the last atlas page's lookup is guarded by a tex-index comparison, leaving "+
-			"distance undefined when the comparison fails:\n%s", df)
-	}
 }
 
 // lcdTexIndexCompareRE matches an equality test against the TexIndex varying (named by nameVariable('v', "TexIndex")).

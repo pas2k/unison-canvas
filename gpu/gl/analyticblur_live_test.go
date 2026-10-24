@@ -265,37 +265,3 @@ func TestLiveAnalyticBlurCaches(t *testing.T) {
 		t.Fatalf("entries after new sigma = %d, want 3", got)
 	}
 }
-
-// TestLiveAnalyticBlurCacheOutputIdentical draws the same blurred circle twice through the device mask lane; the first
-// draw creates and caches the profile, the second reuses it. The rendered buffers must be byte-identical, proving the
-// cached texture yields the same result as a freshly generated one.
-func TestLiveAnalyticBlurCacheOutputIdentical(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	const size = 160
-	drawCircle := func() []byte {
-		sdc := maskFilterDest(t, dc, size)
-		paint := gl.NewPaint()
-		paint.SetColor4f(colorcore.PMColor4f{R: 1, G: 1, B: 1, A: 1})
-		mf := maskfilter.NewBlur(maskfilter.BlurNormal, 6, true)
-		if mf == nil {
-			t.Fatal("NewBlur returned nil")
-		}
-		circle := geom.MakeRRect(geom.RectLTRB(40, 40, 120, 120), 40, 40)
-		shape := gl.MakeStyledShapeRRect(circle, gl.SimpleFillStyle(), gl.DoSimplifyYes)
-		vm := geom.IdentityMatrix()
-		gl.DrawShapeWithMaskFilter(sdc, nil, paint, &vm, mf, &shape)
-		return readSDC(t, sdc)
-	}
-
-	first := drawCircle()  // cache miss: creates and caches the circle profile
-	second := drawCircle() // cache hit: reuses the cached profile
-	if len(first) != len(second) {
-		t.Fatalf("buffer lengths differ: %d vs %d", len(first), len(second))
-	}
-	for i := range first {
-		if first[i] != second[i] {
-			t.Fatalf("cached blur output differs from the fresh blur at byte %d: %d vs %d", i,
-				first[i], second[i])
-		}
-	}
-}

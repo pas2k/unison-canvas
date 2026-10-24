@@ -407,13 +407,3 @@ func TestGpuLiveMipmapManualDrawLane(t *testing.T) {
 	surf.Unref()
 	g.ResourceCache().PurgeUnlockedResources(gpu.PurgeAllResources)
 }
-
-// TestGpuLiveCapsDump logs the resource-layer-relevant caps for the running context, for parity with the checked-in
-// driver dumps.
-func TestGpuLiveCapsDump(t *testing.T) {
-	g := newLiveGpu(t)
-	caps := g.GLCaps()
-	t.Logf("fenceType=%d mapBufferType=%d transferBufferType=%d invalidateBufferType=%d",
-		caps.FenceType(), caps.MapBufferType(), caps.TransferBufferType(),
-		caps.InvalidateBufferType())
-}

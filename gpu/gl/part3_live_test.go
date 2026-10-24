@@ -297,6 +297,14 @@ func TestLiveRRectClipReduction(t *testing.T) {
 	probeAt(t, data, rb, 9, 9, white, 1, "clipped fill corner exterior")
 	probeAt(t, data, rb, 16, 16, blue, 1, "clipped fill corner interior")
 	probeAt(t, data, rb, 4, 32, white, 1, "outside clip left")
+	// Coverage decreases monotonically walking diagonally out through a corner arc, so red (absent from the fill)
+	// increases.
+	r1 := pxAt(data, 14, 14)[0]
+	r2 := pxAt(data, 12, 12)[0]
+	r3 := pxAt(data, 10, 10)[0]
+	if r1 > r2 || r2 > r3 {
+		t.Fatalf("corner arc not monotonic: red %d %d %d", r1, r2, r3)
+	}
 }
 
 func TestLiveMSAARenderPass(t *testing.T) {

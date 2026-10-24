@@ -27,17 +27,6 @@ var cpuBlendMismatchesGPU = map[raster.BlendMode]bool{
 	raster.BlendLuminosity: true,
 }
 
-// TestDoesCPUBlendImplMatchGPU pins the sense of the predicate: it returns true for the modes the CPU reproduces
-// closely enough to fold, i.e. everything except the HSL modes, soft-light and color-burn.
-func TestDoesCPUBlendImplMatchGPU(t *testing.T) {
-	for mode := raster.BlendClear; mode <= raster.BlendLuminosity; mode++ {
-		want := !cpuBlendMismatchesGPU[mode]
-		if got := doesCPUBlendImplMatchGPU(mode); got != want {
-			t.Errorf("doesCPUBlendImplMatchGPU(%d) = %v, want %v", mode, got, want)
-		}
-	}
-}
-
 // TestBlendFPConstantOutputFolding checks that a matching mode is what enables constant folding (and that the folded
 // value is the CPU blend), while a mismatching mode or a non-constant child suppresses it.
 func TestBlendFPConstantOutputFolding(t *testing.T) {

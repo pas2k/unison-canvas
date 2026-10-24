@@ -23,25 +23,6 @@ import (
 	"github.com/richardwilkes/canvas/shaders"
 )
 
-func TestDilateImageFilter(t *testing.T) {
-	pix := drawSquare(t, func(p *canvas.Paint) {
-		p.ImageFilter = imagefilter.Dilate(4, 4, nil, nil)
-	})
-	// The 20..40 square dilates to 16..44.
-	if got := pixel(pix, 30, 30); got != 0xFF0000FF {
-		t.Fatalf("center = %08x, want opaque red", got)
-	}
-	if got := pixel(pix, 17, 30); got != 0xFF0000FF {
-		t.Fatalf("dilated left edge = %08x, want opaque red", got)
-	}
-	if got := pixel(pix, 42, 42); got != 0xFF0000FF {
-		t.Fatalf("dilated corner = %08x, want opaque red", got)
-	}
-	if got := pixel(pix, 14, 30); got != 0 {
-		t.Fatalf("outside dilation = %08x, want transparent", got)
-	}
-}
-
 func TestErodeImageFilter(t *testing.T) {
 	pix := drawSquare(t, func(p *canvas.Paint) {
 		p.ImageFilter = imagefilter.Erode(4, 4, nil, nil)
@@ -58,19 +39,41 @@ func TestErodeImageFilter(t *testing.T) {
 	}
 }
 
-func TestDilateLargeRadiusUsesSparsePasses(t *testing.T) {
-	// radius > 14 exercises the sparse kernel-doubling passes after the linear pass.
-	pix := drawSquare(t, func(p *canvas.Paint) {
-		p.ImageFilter = imagefilter.Dilate(18, 18, nil, nil)
-	})
-	// The 20..40 square dilates to 2..58; every pixel of it must be fully red (morphology preserves hard edges).
-	for _, pt := range [][2]int32{{3, 30}, {30, 3}, {57, 30}, {30, 57}, {30, 30}} {
-		if got := pixel(pix, pt[0], pt[1]); got != 0xFF0000FF {
-			t.Fatalf("(%d,%d) = %08x, want opaque red", pt[0], pt[1], got)
+func TestDilateLinearAndSparsePasses(t *testing.T) {
+	// Every pixel of the dilated square must be fully red (morphology preserves hard edges).
+	for _, tc := range []struct {
+		name    string
+		inside  [][2]int32
+		radius  float32
+		outside [2]int32
+	}{
+		{
+			// The 20..40 square dilates to 16..44.
+			name:    "linear pass only",
+			radius:  4,
+			inside:  [][2]int32{{30, 30}, {17, 30}, {42, 42}},
+			outside: [2]int32{14, 30},
+		},
+		{
+			// radius > 14 exercises the sparse kernel-doubling passes after the linear pass. The 20..40 square dilates
+			// to 2..58.
+			name:    "sparse kernel-doubling passes",
+			radius:  18,
+			inside:  [][2]int32{{3, 30}, {30, 3}, {57, 30}, {30, 57}, {30, 30}},
+			outside: [2]int32{0, 30},
+		},
+	} {
+		pix := drawSquare(t, func(p *canvas.Paint) {
+			p.ImageFilter = imagefilter.Dilate(tc.radius, tc.radius, nil, nil)
+		})
+		for _, pt := range tc.inside {
+			if got := pixel(pix, pt[0], pt[1]); got != 0xFF0000FF {
+				t.Fatalf("%s: (%d,%d) = %08x, want opaque red", tc.name, pt[0], pt[1], got)
+			}
 		}
-	}
-	if got := pixel(pix, 0, 30); got != 0 {
-		t.Fatalf("outside dilation = %08x, want transparent", got)
+		if got := pixel(pix, tc.outside[0], tc.outside[1]); got != 0 {
+			t.Fatalf("%s: outside dilation = %08x, want transparent", tc.name, got)
+		}
 	}
 }
 
@@ -253,22 +256,26 @@ func TestMatrixConvolutionValidation(t *testing.T) {
 }
 
 func TestArithmeticImageFilter(t *testing.T) {
-	// out = 0.5*FG + 0.5*BG with FG = source offset by (10,0) and BG = source.
-	pix := drawSquare(t, func(p *canvas.Paint) {
-		p.ImageFilter = imagefilter.Arithmetic(0, 0.5, 0.5, 0, false,
-			nil, imagefilter.Offset(10, 0, nil, nil), nil)
-	})
-	if got := alphaOf(pixel(pix, 25, 30)); got < 127 || got > 128 {
-		t.Fatalf("background-only alpha = %d, want ~128", got)
-	}
-	if got := alphaOf(pixel(pix, 35, 30)); got != 255 {
-		t.Fatalf("overlap alpha = %d, want 255", got)
-	}
-	if got := alphaOf(pixel(pix, 45, 30)); got < 127 || got > 128 {
-		t.Fatalf("foreground-only alpha = %d, want ~128", got)
-	}
-	if got := pixel(pix, 55, 30); got != 0 {
-		t.Fatalf("outside both = %08x, want transparent", got)
+	// out = 0.5*FG + 0.5*BG with FG = source offset by (10,0) and BG = source. Builder.Eval samples the inputs in layer
+	// space, so a 2x CTM must scale both the geometry and the filter's own offsets.
+	for _, s := range []int32{1, 2} {
+		pix := drawSquareScaled(t, s, func(p *canvas.Paint) {
+			p.ImageFilter = imagefilter.Arithmetic(0, 0.5, 0.5, 0, false,
+				nil, imagefilter.Offset(10, 0, nil, nil), nil)
+		})
+		// The square covers device x in [20,40)*s and the offset copy [30,50)*s.
+		if got := alphaOf(pixel(pix, 25*s, 30*s)); got < 127 || got > 128 {
+			t.Fatalf("scale %d: background-only alpha = %d, want ~128", s, got)
+		}
+		if got := alphaOf(pixel(pix, 35*s, 30*s)); got != 255 {
+			t.Fatalf("scale %d: overlap alpha = %d, want 255", s, got)
+		}
+		if got := alphaOf(pixel(pix, 45*s, 30*s)); got < 127 || got > 128 {
+			t.Fatalf("scale %d: foreground-only alpha = %d, want ~128", s, got)
+		}
+		if got := pixel(pix, 55*s, 30*s); got != 0 {
+			t.Fatalf("scale %d: outside both = %08x, want transparent", s, got)
+		}
 	}
 }
 
@@ -318,42 +325,52 @@ func solidImage(w, h int32, rgba uint32) *imagecore.Image {
 
 func TestImageSourceFilter(t *testing.T) {
 	img := solidImage(4, 4, 0xFF00FF00) // opaque green
-	pix := drawSquare(t, func(p *canvas.Paint) {
-		// The DAG never references the source, so the square disappears and the image lands at dst.
-		p.ImageFilter = imagefilter.Image(img, geom.RectWH(4, 4), geom.RectLTRB(10, 10, 20, 20),
-			shaders.SamplingOptions{Filter: shaders.FilterLinear})
-	})
-	if got := pixel(pix, 15, 15); got != 0xFF00FF00 {
-		t.Fatalf("inside dst = %08x, want opaque green", got)
-	}
-	if got := pixel(pix, 30, 30); got != 0 {
-		t.Fatalf("source content must be discarded, got %08x", got)
-	}
-	if got := pixel(pix, 8, 15); got != 0 {
-		t.Fatalf("outside dst = %08x, want transparent", got)
-	}
-}
-
-func TestImageSourceFractionalSrc(t *testing.T) {
-	img := solidImage(4, 4, 0xFF00FF00)
-	pix := drawSquare(t, func(p *canvas.Paint) {
-		// A fractional src rect takes the strict drawImageRect render lane.
-		p.ImageFilter = imagefilter.Image(img, geom.RectLTRB(0.5, 0.5, 3.5, 3.5),
-			geom.RectLTRB(24, 24, 40, 40), shaders.SamplingOptions{Filter: shaders.FilterLinear})
-	})
-	if got := pixel(pix, 32, 32); got != 0xFF00FF00 {
-		t.Fatalf("inside dst = %08x, want opaque green", got)
-	}
-	if got := pixel(pix, 20, 20); got != 0 {
-		t.Fatalf("outside dst = %08x, want transparent", got)
+	// The DAG never references the source, so the square disappears and the image lands at dst.
+	for _, tc := range []struct {
+		name        string
+		transparent [][2]int32
+		src, dst    geom.Rect
+		inside      [2]int32
+	}{
+		{
+			// (30,30) is the discarded source square; (8,15) is outside dst.
+			name:        "whole image",
+			src:         geom.RectWH(4, 4),
+			dst:         geom.RectLTRB(10, 10, 20, 20),
+			inside:      [2]int32{15, 15},
+			transparent: [][2]int32{{30, 30}, {8, 15}},
+		},
+		{
+			// A fractional src rect takes the strict drawImageRect render lane.
+			name:        "fractional src",
+			src:         geom.RectLTRB(0.5, 0.5, 3.5, 3.5),
+			dst:         geom.RectLTRB(24, 24, 40, 40),
+			inside:      [2]int32{32, 32},
+			transparent: [][2]int32{{20, 20}},
+		},
+	} {
+		pix := drawSquare(t, func(p *canvas.Paint) {
+			p.ImageFilter = imagefilter.Image(img, tc.src, tc.dst,
+				shaders.SamplingOptions{Filter: shaders.FilterLinear})
+		})
+		if got := pixel(pix, tc.inside[0], tc.inside[1]); got != 0xFF00FF00 {
+			t.Fatalf("%s: inside dst = %08x, want opaque green", tc.name, got)
+		}
+		for _, pt := range tc.transparent {
+			if got := pixel(pix, pt[0], pt[1]); got != 0 {
+				t.Fatalf("%s: (%d,%d) = %08x, want transparent", tc.name, pt[0], pt[1], got)
+			}
+		}
 	}
 }
 
 func TestImageSourceEmptyInputs(t *testing.T) {
 	img := solidImage(4, 4, 0xFF00FF00)
-	// Empty src, empty dst, or a nil image collapse to the empty filter (transparent output).
+	// Empty src, empty dst, or a nil image (also through ImageDefault) collapse to the empty filter (transparent
+	// output).
 	for _, f := range []interface{ OnAffectsTransparentBlack() bool }{
 		imagefilter.Image(nil, geom.RectWH(4, 4), geom.RectWH(4, 4), shaders.SamplingOptions{}),
+		imagefilter.ImageDefault(nil, shaders.SamplingOptions{}),
 		imagefilter.Image(img, geom.Rect{}, geom.RectWH(4, 4), shaders.SamplingOptions{}),
 		imagefilter.Image(img, geom.RectWH(4, 4), geom.Rect{}, shaders.SamplingOptions{}),
 		// src entirely outside the image bounds:

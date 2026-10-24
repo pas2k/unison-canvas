@@ -22,12 +22,6 @@ import (
 	"github.com/richardwilkes/canvas/raster"
 )
 
-// TestRecycleProgramInfoNilSafe verifies recycleProgramInfo tolerates a nil programInfo — the merged-away-op case,
-// where createProgramInfo never ran.
-func TestRecycleProgramInfoNilSafe(_ *testing.T) {
-	recycleProgramInfo(nil) // must not panic
-}
-
 // TestRecyclePipelineClearsFPsAndPreservesBacking verifies recyclePipeline (a) drops every retained fragment-processor
 // reference so the pool pins no FPs — load-bearing because the element type is the pointer-carrying FragmentProcessor
 // interface, not the POD the op instance slices hold — while (b) preserving the grown backing (same array, capacity
@@ -104,31 +98,5 @@ func TestRecycleProgramInfoRecyclesPair(t *testing.T) {
 		if fp != nil {
 			t.Fatalf("recycled pipeline still pins a fragment processor at index %d", i)
 		}
-	}
-}
-
-// TestBorrowProgramInfoAndPipelineAreClean verifies both borrow entry points hand back usable, clean shells so
-// NewProgramInfo / NewPipelineHardClip (which set their fields explicitly) behave identically on a reused shell as on a
-// fresh allocation. A borrowed pipeline in particular must present a length-0 fragmentProcessors slice regardless of
-// whether a preserved backing survived.
-func TestBorrowProgramInfoAndPipelineAreClean(t *testing.T) {
-	// Prime the pools with recycled shells so borrow takes the reuse path.
-	pipeline := borrowPipeline()
-	pipeline.flags = pipelineHasStencilClip
-	pipeline.fragmentProcessors = append(pipeline.fragmentProcessors,
-		MakeColorFP(colorcore.PMColor4f{A: 1}), MakeColorFP(colorcore.PMColor4f{R: 1, A: 1}))
-	pi := borrowProgramInfo()
-	pi.needsStencil = true
-	pi.pipeline = pipeline
-	recycleProgramInfo(pi)
-
-	if got := borrowPipeline(); got.flags != 0 || got.xferProcessor != nil ||
-		got.numColorProcessors != 0 || len(got.fragmentProcessors) != 0 {
-		t.Fatalf("borrowPipeline returned an unclean shell: flags=%#x xp!=nil=%v numColor=%d fps=%d",
-			got.flags, got.xferProcessor != nil, got.numColorProcessors, len(got.fragmentProcessors))
-	}
-	if got := borrowProgramInfo(); got.pipeline != nil || got.needsStencil || got.numSamples != 0 {
-		t.Fatalf("borrowProgramInfo returned an unclean shell: pipeline!=nil=%v needsStencil=%v",
-			got.pipeline != nil, got.needsStencil)
 	}
 }

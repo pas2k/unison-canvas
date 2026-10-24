@@ -14,6 +14,7 @@ import (
 	"compress/zlib"
 	"io"
 	"math/rand"
+	"slices"
 	"testing"
 
 	"github.com/richardwilkes/canvas/stream"
@@ -36,20 +37,26 @@ func TestDeflateRoundTrip(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	random := make([]byte, 50000)
 	rng.Read(random)
-	inputs := [][]byte{
-		[]byte(""),
-		[]byte("hello world"),
-		bytes.Repeat([]byte("q 1 0 0 1 0 0 cm BT /F1 12 Tf (Hello) Tj ET Q\n"), 100),
-		random,
+	// Each input is written as a sequence of chunks.
+	inputs := [][][]byte{
+		{[]byte("")},
+		{[]byte("hello world")},
+		{bytes.Repeat([]byte("q 1 0 0 1 0 0 cm BT /F1 12 Tf (Hello) Tj ET Q\n"), 100)},
+		{random},
+		// BytesWritten accumulates across several Writes.
+		slices.Repeat([][]byte{[]byte("The quick brown fox jumps over the lazy dog. ")}, 10),
 	}
 
 	for _, level := range []int{zlib.DefaultCompression, 1, 6, 9} {
-		for i, in := range inputs {
+		for i, chunks := range inputs {
 			var out stream.MemoryWStream
 			d := NewDeflateWStream(&out, level)
-			if !d.Write(in) {
-				t.Fatalf("level %d input %d: write failed", level, i)
+			for _, chunk := range chunks {
+				if !d.Write(chunk) {
+					t.Fatalf("level %d input %d: write failed", level, i)
+				}
 			}
+			in := bytes.Join(chunks, nil)
 			if d.BytesWritten() != int64(len(in)) {
 				t.Errorf("level %d input %d: BytesWritten = %d, want %d (uncompressed count)",
 					level, i, d.BytesWritten(), len(in))
@@ -59,23 +66,6 @@ func TestDeflateRoundTrip(t *testing.T) {
 				t.Errorf("level %d input %d: round trip mismatch (%d vs %d bytes)", level, i, len(got), len(in))
 			}
 		}
-	}
-}
-
-func TestDeflateChunkedWrites(t *testing.T) {
-	var out stream.MemoryWStream
-	d := NewDeflateWStream(&out, zlib.DefaultCompression)
-	full := []byte("The quick brown fox jumps over the lazy dog. ")
-	for i := 0; i < 10; i++ {
-		d.Write(full)
-	}
-	d.Finalize()
-	want := bytes.Repeat(full, 10)
-	if int(d.BytesWritten()) != len(want) {
-		t.Errorf("BytesWritten = %d, want %d", d.BytesWritten(), len(want))
-	}
-	if got := inflate(t, out.Bytes()); !bytes.Equal(got, want) {
-		t.Error("chunked round trip mismatch")
 	}
 }
 

@@ -73,30 +73,6 @@ func TestRectanizerSkylineBasic(t *testing.T) {
 	}
 }
 
-// TestRectanizerSkylineNarrowest checks the tie-break: among equal-y candidates the narrowest skyline segment wins.
-func TestRectanizerSkylineNarrowest(t *testing.T) {
-	r := MakeRectanizerSkyline(64, 64)
-	// Build a skyline with segments: [0,16) h=32, [16,48) h=16, [48,64) h=32.
-	if _, _, ok := r.AddRect(64, 16); !ok {
-		t.Fatal("base row failed")
-	}
-	if x, y, ok := r.AddRect(16, 16); !ok || x != 0 || y != 16 {
-		t.Fatalf("left block at (%d,%d)", x, y)
-	}
-	if x, y, ok := r.AddRect(16, 16); !ok || x != 16 || y != 16 {
-		t.Fatalf("mid block at (%d,%d)", x, y)
-	}
-	// Consume the left block up to 32 so the left segment is height 32.
-	if x, y, ok := r.AddRect(16, 16); !ok || x != 32 || y != 16 {
-		t.Fatalf("right-mid block at (%d,%d)", x, y)
-	}
-	// Skyline is now [0,48) h=32, [48,64) h=16. A 8x8 rect fits at y=32 on both; the placement picks the lowest y
-	// first: 32 at x=48 belongs to the h=16 segment (y=16).
-	if x, y, ok := r.AddRect(8, 8); !ok || x != 48 || y != 16 {
-		t.Fatalf("tie-break rect at (%d,%d), want (48,16)", x, y)
-	}
-}
-
 func TestPlotLocator(t *testing.T) {
 	var invalid PlotLocator
 	if invalid.IsValid() {

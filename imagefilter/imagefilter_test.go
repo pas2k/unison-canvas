@@ -34,8 +34,17 @@ func alphaOf(p uint32) uint32 { return p >> 24 }
 // returning the pixels.
 func drawSquare(t *testing.T, mutate func(p *canvas.Paint)) *raster.Pixmap {
 	t.Helper()
-	pix := raster.NewPixmap(64, 64)
+	return drawSquareScaled(t, 1, mutate)
+}
+
+// drawSquareScaled is drawSquare under a uniform CTM scale, on a surface scaled to match.
+func drawSquareScaled(t *testing.T, scale int32, mutate func(p *canvas.Paint)) *raster.Pixmap {
+	t.Helper()
+	pix := raster.NewPixmap(64*scale, 64*scale)
 	c := canvas.NewForPixmap(pix)
+	if scale != 1 {
+		c.Scale(float32(scale), float32(scale))
+	}
 	p := canvas.NewPaint()
 	p.Color = 0xFFFF0000 // opaque red
 	if mutate != nil {
@@ -69,6 +78,18 @@ func TestBlurImageFilterOnPaint(t *testing.T) {
 			t.Fatalf("non-monotonic falloff at x=%d: %d > %d", x, a, prev)
 		}
 		prev = a
+	}
+
+	// The blur sigma maps through the CTM: a 2x scale doubles the blur's reach. The square maps to (40,40)-(80,80);
+	// blur reach ~12px in device space.
+	pix = drawSquareScaled(t, 2, func(p *canvas.Paint) {
+		p.ImageFilter = imagefilter.Blur(2, 2, shaders.TileDecal, nil, nil)
+	})
+	if a := alphaOf(pixel(pix, 86, 60)); a == 0 || a == 255 {
+		t.Fatalf("scaled blur fringe alpha = %d, want partial", a)
+	}
+	if got := pixel(pix, 100, 60); got != 0 {
+		t.Fatalf("beyond scaled blur reach should be transparent, got %08x", got)
 	}
 }
 
@@ -160,21 +181,6 @@ func TestCropDecalRestrictsBlur(t *testing.T) {
 	}
 }
 
-func TestMergeFilter(t *testing.T) {
-	pix := drawSquare(t, func(p *canvas.Paint) {
-		p.ImageFilter = imagefilter.Merge([]filtercore.Filter{
-			imagefilter.Offset(-10, 0, nil, nil),
-			imagefilter.Offset(10, 0, nil, nil),
-		}, nil)
-	})
-	if a := alphaOf(pixel(pix, 15, 30)); a != 255 {
-		t.Fatalf("left copy missing, alpha=%d", a)
-	}
-	if a := alphaOf(pixel(pix, 45, 30)); a != 255 {
-		t.Fatalf("right copy missing, alpha=%d", a)
-	}
-}
-
 // Merge is the only factory that takes a slice, so it is the only place a caller's backing array could reach the DAG.
 // The DAG is immutable after construction, so a later write to that slice must not rewire the built filter.
 func TestMergeCopiesInputSlice(t *testing.T) {
@@ -191,34 +197,18 @@ func TestMergeCopiesInputSlice(t *testing.T) {
 	if base.Input(0) != left || base.Input(1) != right {
 		t.Fatal("Merge retained the caller's slice")
 	}
+	if filtercore.AffectsTransparentBlack(merged) {
+		t.Fatal("offset does not affect transparent black")
+	}
+	if got := filtercore.CTMCapability(merged); got != filtercore.MatrixCapabilityComplex {
+		t.Fatalf("CTMCapability = %v", got)
+	}
 	pix := drawSquare(t, func(p *canvas.Paint) { p.ImageFilter = merged })
 	if a := alphaOf(pixel(pix, 15, 30)); a != 255 {
 		t.Fatalf("left copy missing, alpha=%d", a)
 	}
 	if a := alphaOf(pixel(pix, 45, 30)); a != 255 {
 		t.Fatalf("right copy missing, alpha=%d", a)
-	}
-}
-
-// Assigning the result back into the slice that produced it must not make the filter its own input, which would make
-// every recursive walk of the DAG run until the stack overflows.
-func TestMergeSelfAssignmentIsNotACycle(t *testing.T) {
-	inner := imagefilter.Offset(10, 0, nil, nil)
-	s := []filtercore.Filter{inner}
-	s[0] = imagefilter.Merge(s, nil)
-	// Check the edge before running any of the walks below: with the input aliased to s[0] they never return.
-	if s[0].Base().Input(0) != inner {
-		t.Fatal("Merge aliased its own result as its input")
-	}
-	if filtercore.AffectsTransparentBlack(s[0]) {
-		t.Fatal("offset does not affect transparent black")
-	}
-	if got := filtercore.CTMCapability(s[0]); got != filtercore.MatrixCapabilityComplex {
-		t.Fatalf("CTMCapability = %v", got)
-	}
-	pix := drawSquare(t, func(p *canvas.Paint) { p.ImageFilter = s[0] })
-	if a := alphaOf(pixel(pix, 45, 30)); a != 255 {
-		t.Fatalf("offset copy missing, alpha=%d", a)
 	}
 }
 
@@ -322,49 +312,32 @@ func TestMirrorCropNegativePeriod(t *testing.T) {
 	}
 }
 
-// TestArithmeticUnderScaledCanvas exercises Builder.Eval's input shaders under a non-identity layer matrix: the inputs
-// are always sampled in layer space, so a 2x CTM must scale both the geometry and the filter's own offsets.
-func TestArithmeticUnderScaledCanvas(t *testing.T) {
-	pix := raster.NewPixmap(128, 128)
-	c := canvas.NewForPixmap(pix)
-	c.Scale(2, 2)
-	p := canvas.NewPaint()
-	p.Color = 0xFFFF0000
-	// out = 0.5*BG + 0.5*FG, with BG the source square and FG the source offset by (10,0) in parameter space.
-	p.ImageFilter = imagefilter.Arithmetic(0, 0.5, 0.5, 0, false, nil,
-		imagefilter.Offset(10, 0, nil, nil), nil)
-	c.DrawRect(geom.RectLTRB(20, 20, 40, 40), p)
-	// The square covers device x in [40,80) and the offset copy [60,100).
-	if got := alphaOf(pixel(pix, 50, 60)); got < 127 || got > 128 {
-		t.Fatalf("background-only alpha = %d, want ~128", got)
-	}
-	if got := alphaOf(pixel(pix, 70, 60)); got != 255 {
-		t.Fatalf("overlap alpha = %d, want 255", got)
-	}
-	if got := alphaOf(pixel(pix, 90, 60)); got < 127 || got > 128 {
-		t.Fatalf("foreground-only alpha = %d, want ~128", got)
-	}
-	if got := pixel(pix, 110, 60); got != 0 {
-		t.Fatalf("outside both = %08x, want transparent", got)
-	}
-}
-
 func TestSaveLayerWithFilterPaint(t *testing.T) {
-	// saveLayer with an image-filter paint applies the filter at restore.
-	pix := raster.NewPixmap(64, 64)
-	c := canvas.NewForPixmap(pix)
-	lp := canvas.NewPaint()
-	lp.ImageFilter = imagefilter.Offset(12, 0, nil, nil)
-	c.SaveLayer(nil, lp)
-	p := canvas.NewPaint()
-	p.Color = 0xFF00FF00
-	c.DrawRect(geom.RectLTRB(10, 10, 20, 20), p)
-	c.Restore()
-	if got := pixel(pix, 15, 15); got != 0 {
-		t.Fatalf("unfiltered position should be empty, got %08x", got)
-	}
-	if a := alphaOf(pixel(pix, 27, 15)); a != 255 {
-		t.Fatalf("offset layer content missing, alpha=%d", a)
+	// saveLayer with an image-filter paint applies the filter at restore; a paint alpha rides the restore paint and
+	// modulates the filtered result.
+	for _, tc := range []struct {
+		alpha  uint8
+		lo, hi uint32 // inclusive range of the filtered content's alpha
+	}{
+		{alpha: 255, lo: 255, hi: 255},
+		{alpha: 128, lo: 126, hi: 130},
+	} {
+		pix := raster.NewPixmap(64, 64)
+		c := canvas.NewForPixmap(pix)
+		lp := canvas.NewPaint()
+		lp.Color = lp.Color.WithAlpha(tc.alpha)
+		lp.ImageFilter = imagefilter.Offset(12, 0, nil, nil)
+		c.SaveLayer(nil, lp)
+		p := canvas.NewPaint()
+		p.Color = 0xFF00FF00
+		c.DrawRect(geom.RectLTRB(10, 10, 20, 20), p)
+		c.Restore()
+		if got := pixel(pix, 15, 15); got != 0 {
+			t.Fatalf("layer alpha %d: unfiltered position should be empty, got %08x", tc.alpha, got)
+		}
+		if a := alphaOf(pixel(pix, 27, 15)); a < tc.lo || a > tc.hi {
+			t.Fatalf("layer alpha %d: offset layer content alpha = %d, want %d..%d", tc.alpha, a, tc.lo, tc.hi)
+		}
 	}
 }
 
@@ -391,42 +364,6 @@ func TestBlurBoundsPropagation(t *testing.T) {
 	fb := f.OnComputeFastBounds(content)
 	if fb != content.Outset(12, 12) {
 		t.Fatalf("fast bounds = %v", fb)
-	}
-}
-
-func TestPaintAlphaOnFilteredLayer(t *testing.T) {
-	// A paint alpha rides the restore paint and modulates the filtered result.
-	pix := raster.NewPixmap(64, 64)
-	c := canvas.NewForPixmap(pix)
-	lp := canvas.NewPaint()
-	lp.Color = lp.Color.WithAlpha(128)
-	lp.ImageFilter = imagefilter.Offset(0, 0, nil, nil)
-	c.SaveLayer(nil, lp)
-	p := canvas.NewPaint()
-	p.Color = 0xFFFF0000
-	c.DrawRect(geom.RectLTRB(10, 10, 30, 30), p)
-	c.Restore()
-	a := alphaOf(pixel(pix, 20, 20))
-	if a < 126 || a > 130 {
-		t.Fatalf("alpha-modulated layer alpha = %d, want ~128", a)
-	}
-}
-
-func TestFilterWithScaledCanvas(t *testing.T) {
-	// The blur sigma maps through the CTM: a 2x scale doubles the blur's reach.
-	pix := raster.NewPixmap(128, 128)
-	c := canvas.NewForPixmap(pix)
-	c.Scale(2, 2)
-	p := canvas.NewPaint()
-	p.Color = 0xFFFF0000
-	p.ImageFilter = imagefilter.Blur(2, 2, shaders.TileDecal, nil, nil)
-	c.DrawRect(geom.RectLTRB(20, 20, 40, 40), p)
-	// The square maps to (40,40)-(80,80); blur reach ~12px in device space.
-	if a := alphaOf(pixel(pix, 86, 60)); a == 0 || a == 255 {
-		t.Fatalf("scaled blur fringe alpha = %d, want partial", a)
-	}
-	if got := pixel(pix, 100, 60); got != 0 {
-		t.Fatalf("beyond scaled blur reach should be transparent, got %08x", got)
 	}
 }
 

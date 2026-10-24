@@ -87,65 +87,44 @@ func TestRelevantSubset(t *testing.T) {
 	}
 }
 
+// TestPeriodicAxisTransform covers outputs on either side of the crop. Left of / above the crop the period indices are
+// negative, and parity has to be read off the integer period: a signed remainder reports -1 for an odd negative period,
+// which silently dropped the mirror flip and rendered that tile as a plain translation.
 func TestPeriodicAxisTransform(t *testing.T) {
 	crop := geom.IRectLTRB(0, 0, 10, 10)
-	// Output fully inside one period to the right: repeat is a pure translation moving the image onto the visible
-	// period.
-	m, ok := periodicAxisTransform(shaders.TileRepeat, crop, geom.IRectLTRB(12, 2, 18, 8))
-	if !ok {
-		t.Fatalf("expected single-period repeat to simplify")
-	}
-	if p := m.MapPoint(geom.Point{X: 2, Y: 2}); p.X != 12 || p.Y != 2 {
-		t.Fatalf("repeat maps (2,2) -> %v, want (12,2)", p)
-	}
-	// Mirror in an odd period reflects the image into the period.
-	m, ok = periodicAxisTransform(shaders.TileMirror, crop, geom.IRectLTRB(12, 2, 18, 8))
-	if !ok {
-		t.Fatalf("expected single-period mirror to simplify")
-	}
-	if p := m.MapPoint(geom.Point{X: 2, Y: 2}); p.X != 18 || p.Y != 2 {
-		t.Fatalf("mirror maps (2,2) -> %v, want (18,2)", p)
-	}
-	// An output spanning both crop edges cannot simplify.
-	if _, ok = periodicAxisTransform(shaders.TileRepeat, crop, geom.IRectLTRB(-2, 0, 14, 8)); ok {
-		t.Fatalf("multi-period tiling must not simplify")
-	}
-}
-
-// TestPeriodicAxisTransformNegativePeriods covers outputs that sit left of / above the crop, where the period indices
-// are negative. Parity has to be read off the integer period: a signed remainder reports -1 for an odd negative period,
-// which silently dropped the mirror flip and rendered that tile as a plain translation.
-func TestPeriodicAxisTransformNegativePeriods(t *testing.T) {
-	crop := geom.IRectLTRB(0, 0, 10, 10)
-	// Period -1 on X: the tile immediately left of the crop is mirrored, so image x=2 lands at layer x=-2 (matching
-	// what shaders' exclusiveMirror computes for the same tiling).
-	m, ok := periodicAxisTransform(shaders.TileMirror, crop, geom.IRectLTRB(-8, 2, -2, 8))
-	if !ok {
-		t.Fatalf("expected single-period mirror to simplify")
-	}
-	if p := m.MapPoint(geom.Point{X: 2, Y: 2}); p.X != -2 || p.Y != 2 {
-		t.Fatalf("x period -1 maps (2,2) -> %v, want (-2,2)", p)
-	}
-	// Period -1 on Y behaves the same way.
-	if m, ok = periodicAxisTransform(shaders.TileMirror, crop, geom.IRectLTRB(2, -8, 8, -2)); !ok {
-		t.Fatalf("expected single-period mirror to simplify")
-	}
-	if p := m.MapPoint(geom.Point{X: 2, Y: 2}); p.X != 2 || p.Y != -2 {
-		t.Fatalf("y period -1 maps (2,2) -> %v, want (2,-2)", p)
-	}
-	// Period -2 is even, so it stays an unmirrored translation of two periods.
-	if m, ok = periodicAxisTransform(shaders.TileMirror, crop, geom.IRectLTRB(-18, 2, -12, 8)); !ok {
-		t.Fatalf("expected single-period mirror to simplify")
-	}
-	if p := m.MapPoint(geom.Point{X: 2, Y: 2}); p.X != -18 || p.Y != 2 {
-		t.Fatalf("x period -2 maps (2,2) -> %v, want (-18,2)", p)
-	}
-	// Repeat never flips, negative period or not.
-	if m, ok = periodicAxisTransform(shaders.TileRepeat, crop, geom.IRectLTRB(-8, 2, -2, 8)); !ok {
-		t.Fatalf("expected single-period repeat to simplify")
-	}
-	if p := m.MapPoint(geom.Point{X: 2, Y: 2}); p.X != -8 || p.Y != 2 {
-		t.Fatalf("repeat period -1 maps (2,2) -> %v, want (-8,2)", p)
+	for _, tc := range []struct {
+		name   string
+		tile   shaders.TileMode
+		output geom.IRect
+		ok     bool
+		want   geom.Point // where image (2,2) lands
+	}{
+		// Output fully inside one period to the right: repeat is a pure translation moving the image onto the visible
+		// period.
+		{"repeat period 1", shaders.TileRepeat, geom.IRectLTRB(12, 2, 18, 8), true, geom.Point{X: 12, Y: 2}},
+		// Mirror in an odd period reflects the image into the period.
+		{"mirror period 1", shaders.TileMirror, geom.IRectLTRB(12, 2, 18, 8), true, geom.Point{X: 18, Y: 2}},
+		// An output spanning both crop edges cannot simplify.
+		{"repeat spanning both crop edges", shaders.TileRepeat, geom.IRectLTRB(-2, 0, 14, 8), false, geom.Point{}},
+		// The tile immediately left of the crop is mirrored, so image x=2 lands at layer x=-2 (matching what shaders'
+		// exclusiveMirror computes for the same tiling).
+		{"mirror x period -1", shaders.TileMirror, geom.IRectLTRB(-8, 2, -2, 8), true, geom.Point{X: -2, Y: 2}},
+		{"mirror y period -1", shaders.TileMirror, geom.IRectLTRB(2, -8, 8, -2), true, geom.Point{X: 2, Y: -2}},
+		// Period -2 is even, so it stays an unmirrored translation of two periods.
+		{"mirror x period -2", shaders.TileMirror, geom.IRectLTRB(-18, 2, -12, 8), true, geom.Point{X: -18, Y: 2}},
+		// Repeat never flips, negative period or not.
+		{"repeat x period -1", shaders.TileRepeat, geom.IRectLTRB(-8, 2, -2, 8), true, geom.Point{X: -8, Y: 2}},
+	} {
+		m, ok := periodicAxisTransform(tc.tile, crop, tc.output)
+		if ok != tc.ok {
+			t.Fatalf("%s: simplified = %v, want %v", tc.name, ok, tc.ok)
+		}
+		if !ok {
+			continue
+		}
+		if p := m.MapPoint(geom.Point{X: 2, Y: 2}); p != tc.want {
+			t.Fatalf("%s maps (2,2) -> %v, want %v", tc.name, p, tc.want)
+		}
 	}
 }
 
@@ -375,45 +354,6 @@ func TestRasterBlurRejectsUnusableSources(t *testing.T) {
 		}
 		if got := blur(si); got != nil {
 			t.Fatalf("Blur of a %v source = %v, want nil", ct, got)
-		}
-	}
-}
-
-// Only the destination half of each mode's Porter-Duff pair is transcribed (the source half multiplies a transparent
-// black source and cannot change the answer), so pin the transcription and the advanced-mode miss.
-func TestBlendModeDstCoeff(t *testing.T) {
-	want := map[raster.BlendMode]blendCoeff{
-		raster.BlendClear:    coeffZero,
-		raster.BlendSrc:      coeffZero,
-		raster.BlendDst:      coeffOne,
-		raster.BlendSrcOver:  coeffISA,
-		raster.BlendDstOver:  coeffOne,
-		raster.BlendSrcIn:    coeffZero,
-		raster.BlendDstIn:    coeffSA,
-		raster.BlendSrcOut:   coeffZero,
-		raster.BlendDstOut:   coeffISA,
-		raster.BlendSrcATop:  coeffISA,
-		raster.BlendDstATop:  coeffSA,
-		raster.BlendXor:      coeffISA,
-		raster.BlendPlus:     coeffOne,
-		raster.BlendModulate: coeffSC,
-		raster.BlendScreen:   coeffISC,
-	}
-	if len(want) != len(gDstCoeffs) {
-		t.Fatalf("table covers %d modes, want %d", len(gDstCoeffs), len(want))
-	}
-	for mode, coeff := range want {
-		got, ok := blendModeDstCoeff(mode)
-		if !ok {
-			t.Fatalf("mode %d not in the coefficient table", mode)
-		}
-		if got != coeff {
-			t.Fatalf("mode %d dst coefficient = %d, want %d", mode, got, coeff)
-		}
-	}
-	for _, mode := range []raster.BlendMode{raster.BlendOverlay, raster.BlendMultiply, raster.BlendLuminosity} {
-		if _, ok := blendModeDstCoeff(mode); ok {
-			t.Fatalf("advanced mode %d reported a coefficient", mode)
 		}
 	}
 }

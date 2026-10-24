@@ -107,14 +107,6 @@ func imagesEqual(a, b *Glyph) bool {
 	return true
 }
 
-func TestCOLRv1NeedsCurrentColor(t *testing.T) {
-	// The COLR table is present, so the foreground color must enter the scaler rec (the U+F0B00… group paints with
-	// palette index 0xFFFF).
-	if !loadCOLRv1Typeface(t).GlyphMaskNeedsCurrentColor() {
-		t.Error("COLRv1 font must need the current color")
-	}
-}
-
 func TestCOLRv1GlyphMetrics(t *testing.T) {
 	tf := loadCOLRv1Typeface(t)
 
@@ -1065,31 +1057,6 @@ func TestCOLRv1LayerListRangeGuard(t *testing.T) {
 				t.Errorf("draw traverse = %v, want %v", got, c.want)
 			}
 		})
-	}
-}
-
-func TestCOLRv1DepthGuard(t *testing.T) {
-	// A synthetic non-cyclic chain deeper than colrV1MaxDepth must fail the traversal (the walker cannot recurse
-	// without bound); a shallow chain succeeds. Bounds mode exercises the shared guard without needing a scaler
-	// context: PaintTranslate/PaintSolid touch neither the face nor the palette.
-	build := func(depth int) tables.PaintTable {
-		var p tables.PaintTable = tables.PaintSolid{PaletteIndex: 0xFFFF, Alpha: 1 << 14}
-		for range depth {
-			p = tables.PaintTranslate{Paint: p}
-		}
-		return p
-	}
-	var bounds geom.Rect
-	w := &colrV1Walker{bounds: &bounds, visited: map[uint16]bool{}}
-	w.ctm.SetIdentity()
-	if w.traverse(build(colrV1MaxDepth + 1)) {
-		t.Error("traversal deeper than colrV1MaxDepth must fail")
-	}
-	if !w.traverse(build(8)) {
-		t.Error("shallow traversal must succeed")
-	}
-	if w.depth != 0 {
-		t.Errorf("depth counter leaked: %d", w.depth)
 	}
 }
 

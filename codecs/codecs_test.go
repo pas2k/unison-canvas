@@ -205,80 +205,54 @@ func TestJPEGGrayEXIFOrientation(t *testing.T) {
 	}
 	plain := buf.Bytes()
 
-	app1 := exifAPP1(6) // orientation 6 = rotate 90 CW
-	withEXIF := append(append(append([]byte{}, plain[:2]...), app1...), plain[2:]...)
+	for _, tc := range []struct {
+		name     string
+		segments []byte // spliced in after SOI
+	}{
+		{"APP1 right after SOI", exifAPP1(6)}, // orientation 6 = rotate 90 CW
+		// ITU T.81 §B.1.1.2 permits any number of 0xFF fill bytes ahead of any marker, and image/jpeg accepts them, so
+		// the segment walk must skip them rather than mistake a fill byte for the marker and give up. Fill + a comment
+		// segment (so a fill run before a skipped segment is exercised too), then fill + APP1 Exif.
+		{
+			"fill bytes before markers",
+			append([]byte{0xFF, 0xFF, 0xFF, 0xFE, 0, 4, 'h', 'i', 0xFF, 0xFF}, exifAPP1(6)...),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := append([]byte{}, plain[:2]...)
+			data = append(data, tc.segments...)
+			data = append(data, plain[2:]...)
 
-	codec := jpegCodec()
-	info, ok := codec.DecodeInfo(withEXIF)
-	if !ok || info.ColorType != imagecore.ColorTypeGray8 {
-		t.Fatalf("DecodeInfo gray=%v ok=%v", info.ColorType, ok)
-	}
-	if info.Width != 2 || info.Height != 4 {
-		t.Fatalf("DecodeInfo dims %dx%d, want 2x4", info.Width, info.Height)
-	}
-	p, err := codec.Decode(withEXIF)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Bytes == nil {
-		t.Fatal("expected Bytes-backed Gray8 pixels")
-	}
-	if p.Info.Width != info.Width || p.Info.Height != info.Height {
-		t.Fatalf("Decode dims %dx%d != DecodeInfo %dx%d", p.Info.Width, p.Info.Height, info.Width, info.Height)
-	}
-	// Rotate 90 CW: src(3,0) (brightest, ~190) → dst(1,3); src(0,0) (~40) → dst(1,0); row 1 (dark ~20) → column 0.
-	bright := p.Bytes[3*int(p.RowElems)+1]
-	dim := p.Bytes[0*int(p.RowElems)+1]
-	dark := p.Bytes[3*int(p.RowElems)+0]
-	if bright < 150 || dim > 90 || dark > 90 {
-		t.Fatalf("rotated gray bright=%d dim=%d dark=%d", bright, dim, dark)
-	}
-}
-
-func TestJPEGEXIFOrientationWithFillBytes(t *testing.T) {
-	// ITU T.81 §B.1.1.2 permits any number of 0xFF fill bytes ahead of any marker, and image/jpeg accepts them, so the
-	// segment walk must skip them rather than mistake a fill byte for the marker and give up.
-	src := image.NewGray(image.Rect(0, 0, 4, 2))
-	for x := range 4 {
-		src.SetGray(x, 0, color.Gray{Y: uint8(40 + 50*x)})
-		src.SetGray(x, 1, color.Gray{Y: 20})
-	}
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: 100}); err != nil {
-		t.Fatal(err)
-	}
-	plain := buf.Bytes()
-
-	// SOI, fill + a comment segment (so a fill run before a skipped segment is exercised too), fill + APP1 Exif.
-	withFill := append([]byte{}, plain[:2]...)
-	withFill = append(withFill, 0xFF, 0xFF, 0xFF, 0xFE, 0, 4, 'h', 'i', 0xFF, 0xFF)
-	withFill = append(withFill, exifAPP1(6)...) // orientation 6 = rotate 90 CW
-	withFill = append(withFill, plain[2:]...)
-
-	if got := jpegOrigin(withFill); got != 6 {
-		t.Fatalf("jpegOrigin = %d, want 6", got)
-	}
-	codec := jpegCodec()
-	info, ok := codec.DecodeInfo(withFill)
-	if !ok {
-		t.Fatal("DecodeInfo failed")
-	}
-	if info.Width != 2 || info.Height != 4 {
-		t.Fatalf("DecodeInfo dims %dx%d, want 2x4", info.Width, info.Height)
-	}
-	p, err := codec.Decode(withFill)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Info.Width != 2 || p.Info.Height != 4 {
-		t.Fatalf("Decode dims %dx%d, want 2x4", p.Info.Width, p.Info.Height)
-	}
-	// Rotate 90 CW: src(3,0) (brightest, ~190) → dst(1,3); src(0,0) (~40) → dst(1,0); row 1 (dark ~20) → column 0.
-	bright := p.Bytes[3*int(p.RowElems)+1]
-	dim := p.Bytes[0*int(p.RowElems)+1]
-	dark := p.Bytes[3*int(p.RowElems)+0]
-	if bright < 150 || dim > 90 || dark > 90 {
-		t.Fatalf("rotated gray bright=%d dim=%d dark=%d", bright, dim, dark)
+			if got := jpegOrigin(data); got != 6 {
+				t.Fatalf("jpegOrigin = %d, want 6", got)
+			}
+			codec := jpegCodec()
+			info, ok := codec.DecodeInfo(data)
+			if !ok || info.ColorType != imagecore.ColorTypeGray8 {
+				t.Fatalf("DecodeInfo gray=%v ok=%v", info.ColorType, ok)
+			}
+			if info.Width != 2 || info.Height != 4 {
+				t.Fatalf("DecodeInfo dims %dx%d, want 2x4", info.Width, info.Height)
+			}
+			p, err := codec.Decode(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Bytes == nil {
+				t.Fatal("expected Bytes-backed Gray8 pixels")
+			}
+			if p.Info.Width != info.Width || p.Info.Height != info.Height {
+				t.Fatalf("Decode dims %dx%d != DecodeInfo %dx%d", p.Info.Width, p.Info.Height, info.Width, info.Height)
+			}
+			// Rotate 90 CW: src(3,0) (brightest, ~190) → dst(1,3); src(0,0) (~40) → dst(1,0); row 1 (dark ~20) →
+			// column 0.
+			bright := p.Bytes[3*int(p.RowElems)+1]
+			dim := p.Bytes[0*int(p.RowElems)+1]
+			dark := p.Bytes[3*int(p.RowElems)+0]
+			if bright < 150 || dim > 90 || dark > 90 {
+				t.Fatalf("rotated gray bright=%d dim=%d dark=%d", bright, dim, dark)
+			}
+		})
 	}
 }
 
@@ -304,69 +278,48 @@ func TestJPEGOriginMalformed(t *testing.T) {
 }
 
 func TestOrientPixelsMappings(t *testing.T) {
-	info, _ := imagecore.MakeInfo(3, 2, imagecore.ColorTypeRGBA8888, imagecore.AlphaTypePremul)
-	src := imagecore.NewPixels(info)
-	for i := range 6 {
-		src.Words[i] = uint32(i + 1)
-	}
-	// origin 3 = rotate 180
-	out := orientPixels(src, 3)
-	if out.Words[0] != 6 || out.Words[5] != 1 {
-		t.Fatalf("rot180: %v", out.Words)
-	}
-	// origin 6 = rotate 90 CW: dst is 2x3; src(0,0) → dst(1,0)
-	out = orientPixels(src, 6)
-	if out.Info.Width != 2 || out.Info.Height != 3 {
-		t.Fatal("rot90 dims")
-	}
-	if out.Words[1] != 1 || out.Words[0] != 4 {
-		t.Fatalf("rot90: %v", out.Words)
-	}
-}
-
-func TestOrientPixelsGray8(t *testing.T) {
-	// Gray8 pixels are Bytes-backed (Words == nil); orientation must still be applied.
-	info, _ := imagecore.MakeInfo(3, 2, imagecore.ColorTypeGray8, imagecore.AlphaTypeOpaque)
-	src := imagecore.NewPixels(info)
-	if src.Words != nil || src.Bytes == nil {
-		t.Fatal("expected Bytes-backed Gray8 pixels")
-	}
-	for i := range 6 {
-		src.Bytes[i] = byte(i + 1)
-	}
-	// origin 3 = rotate 180: first and last swap ends.
-	out := orientPixels(src, 3)
-	if out.Words != nil || out.Bytes[0] != 6 || out.Bytes[5] != 1 {
-		t.Fatalf("rot180: %v", out.Bytes)
-	}
-	// origin 6 = rotate 90 CW: dst is 2x3; src(0,0)=1 → dst(1,0), src(0,1)=4 → dst(0,0).
-	out = orientPixels(src, 6)
-	if out.Info.Width != 2 || out.Info.Height != 3 {
-		t.Fatalf("rot90 dims %dx%d", out.Info.Width, out.Info.Height)
-	}
-	if out.Bytes[1] != 1 || out.Bytes[0] != 4 {
-		t.Fatalf("rot90: %v", out.Bytes)
-	}
-}
-
-func TestGIFFirstFrame(t *testing.T) {
-	pal := color.Palette{color.NRGBA{A: 0}, color.NRGBA{R: 255, A: 255}, color.NRGBA{G: 255, A: 255}}
-	frame := image.NewPaletted(image.Rect(0, 0, 4, 4), pal)
-	for i := range frame.Pix {
-		frame.Pix[i] = 1
-	}
-	frame.Pix[0] = 0 // transparent pixel
-	var buf bytes.Buffer
-	if err := gif.EncodeAll(&buf, &gif.GIF{Image: []*image.Paletted{frame}, Delay: []int{0}}); err != nil {
-		t.Fatal(err)
-	}
-	im := decodeVia(t, buf.Bytes())
-	if im.AlphaType() != imagecore.AlphaTypePremul {
-		t.Fatalf("gif alpha %v", im.AlphaType())
-	}
-	p := im.PeekPixels(imagecore.CachingAllow)
-	if p.Words[0] != 0 || p.Words[1]&0xFF != 255 {
-		t.Fatalf("gif pixels %08x %08x", p.Words[0], p.Words[1])
+	for _, tc := range []struct {
+		name        string
+		ct          imagecore.ColorType
+		at          imagecore.AlphaType
+		bytesBacked bool // Gray8 pixels have Words == nil; orientation must still be applied
+	}{
+		{"words-backed RGBA8888", imagecore.ColorTypeRGBA8888, imagecore.AlphaTypePremul, false},
+		{"bytes-backed Gray8", imagecore.ColorTypeGray8, imagecore.AlphaTypeOpaque, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info, _ := imagecore.MakeInfo(3, 2, tc.ct, tc.at)
+			src := imagecore.NewPixels(info)
+			if (src.Words == nil) != tc.bytesBacked || (src.Bytes == nil) == tc.bytesBacked {
+				t.Fatalf("Words=%v Bytes=%v, want Bytes-backed=%v", src.Words != nil, src.Bytes != nil, tc.bytesBacked)
+			}
+			elem := func(p *imagecore.Pixels, i int) uint32 {
+				if tc.bytesBacked {
+					return uint32(p.Bytes[i])
+				}
+				return p.Words[i]
+			}
+			for i := range 6 {
+				if tc.bytesBacked {
+					src.Bytes[i] = byte(i + 1)
+				} else {
+					src.Words[i] = uint32(i + 1)
+				}
+			}
+			// origin 3 = rotate 180: first and last swap ends.
+			out := orientPixels(src, 3)
+			if (out.Words == nil) != tc.bytesBacked || elem(out, 0) != 6 || elem(out, 5) != 1 {
+				t.Fatalf("rot180: %v %v", out.Words, out.Bytes)
+			}
+			// origin 6 = rotate 90 CW: dst is 2x3; src(0,0)=1 → dst(1,0), src(0,1)=4 → dst(0,0).
+			out = orientPixels(src, 6)
+			if out.Info.Width != 2 || out.Info.Height != 3 {
+				t.Fatalf("rot90 dims %dx%d", out.Info.Width, out.Info.Height)
+			}
+			if elem(out, 1) != 1 || elem(out, 0) != 4 {
+				t.Fatalf("rot90: %v %v", out.Words, out.Bytes)
+			}
+		})
 	}
 }
 
@@ -671,36 +624,51 @@ func checkPNGTRNS(t *testing.T, data []byte, want []uint32) {
 	}
 }
 
-// TestPNGGrayWithTRNS covers the tRNS chunk on a grayscale PNG: png.DecodeConfig stops at IHDR and reports
-// color.GrayModel, but png.Decode honors tRNS and returns an *image.NRGBA. Reporting Gray8/opaque from the config
-// alone ran every pixel through color.GrayModel.Convert, whose RGBA() premultiplies, so a transparent pixel decoded to
-// opaque black and the alpha vanished.
-func TestPNGGrayWithTRNS(t *testing.T) {
-	g := image.NewGray(image.Rect(0, 0, 2, 1))
-	g.Pix[0] = 0x00
-	g.Pix[1] = 0xFF
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, g); err != nil {
-		t.Fatal(err)
+// TestPNGNonPalettedTRNS covers the tRNS chunk on grayscale and truecolor PNGs: png.DecodeConfig stops at IHDR and
+// reports color.GrayModel or color.RGBAModel, but png.Decode honors tRNS and returns an *image.NRGBA. Reporting
+// Gray8/opaque from the config alone ran every pixel through color.GrayModel.Convert, whose RGBA() premultiplies, so a
+// transparent pixel decoded to opaque black and the alpha vanished; the truecolor lane had the same defect.
+func TestPNGNonPalettedTRNS(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		img  func() image.Image
+		trns []byte
+		want []uint32
+	}{
+		{
+			name: "gray",
+			img: func() image.Image {
+				g := image.NewGray(image.Rect(0, 0, 2, 1))
+				g.Pix[0] = 0x00
+				g.Pix[1] = 0xFF
+				return g
+			},
+			// tRNS for 8-bit grayscale is one 16-bit sample; gray level 0 becomes fully transparent.
+			trns: []byte{0x00, 0x00},
+			want: []uint32{0x00000000, 0xFFFFFFFF},
+		},
+		{
+			name: "truecolor",
+			img: func() image.Image {
+				// Opaque, so png.Encode picks truecolor with no alpha channel.
+				m := image.NewRGBA(image.Rect(0, 0, 2, 1))
+				m.SetRGBA(0, 0, color.RGBA{R: 0x11, G: 0x22, B: 0x33, A: 0xFF})
+				m.SetRGBA(1, 0, color.RGBA{R: 0x44, G: 0x55, B: 0x66, A: 0xFF})
+				return m
+			},
+			// tRNS for 8-bit truecolor is three 16-bit samples; color 0x112233 becomes fully transparent.
+			trns: []byte{0, 0x11, 0, 0x22, 0, 0x33},
+			want: []uint32{0x00000000, 0xFF665544},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, tc.img()); err != nil {
+				t.Fatal(err)
+			}
+			checkPNGTRNS(t, insertPNGChunk(t, buf.Bytes(), "tRNS", tc.trns), tc.want)
+		})
 	}
-	// tRNS for 8-bit grayscale is one 16-bit sample; gray level 0 becomes fully transparent.
-	data := insertPNGChunk(t, buf.Bytes(), "tRNS", []byte{0x00, 0x00})
-	checkPNGTRNS(t, data, []uint32{0x00000000, 0xFFFFFFFF})
-}
-
-// TestPNGTruecolorWithTRNS covers the same defect on the truecolor lane, where DecodeConfig reports color.RGBAModel
-// and png.Decode again returns an *image.NRGBA.
-func TestPNGTruecolorWithTRNS(t *testing.T) {
-	m := image.NewRGBA(image.Rect(0, 0, 2, 1))
-	m.SetRGBA(0, 0, color.RGBA{R: 0x11, G: 0x22, B: 0x33, A: 0xFF})
-	m.SetRGBA(1, 0, color.RGBA{R: 0x44, G: 0x55, B: 0x66, A: 0xFF})
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, m); err != nil { // opaque, so png.Encode picks truecolor with no alpha channel
-		t.Fatal(err)
-	}
-	// tRNS for 8-bit truecolor is three 16-bit samples; color 0x112233 becomes fully transparent.
-	data := insertPNGChunk(t, buf.Bytes(), "tRNS", []byte{0, 0x11, 0, 0x22, 0, 0x33})
-	checkPNGTRNS(t, data, []uint32{0x00000000, 0xFF665544})
 }
 
 // TestPNGPalettedTRNSUnaffected guards the other direction: DecodeConfig does parse tRNS for paletted PNGs, so the
@@ -777,6 +745,9 @@ func TestGIFAnimationFirstFrameOnly(t *testing.T) {
 
 	// The whole animation still decodes to frame 0.
 	im := decodeVia(t, full)
+	if im.AlphaType() != imagecore.AlphaTypePremul {
+		t.Fatalf("gif alpha %v", im.AlphaType())
+	}
 	p := im.PeekPixels(imagecore.CachingAllow)
 	if p.Words[0] != 0 || p.Words[1] != 0xFF0000FF {
 		t.Fatalf("frame 0 pixels %08x %08x", p.Words[0], p.Words[1])

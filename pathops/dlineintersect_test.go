@@ -219,16 +219,8 @@ func TestPathOpsLineIntersection(t *testing.T) {
 	}
 }
 
-func TestPathOpsLineIntersectionOneOff(t *testing.T) {
-	testOneLine(t, lineIntersectTests[0][0], lineIntersectTests[0][1], true)
-}
-
 func TestPathOpsLineIntersectionExactOneOff(t *testing.T) {
 	testOneLine(t, lineIntersectTests[0][0], lineIntersectTests[0][1], false)
-}
-
-func TestPathOpsLineIntersectionOneCoincident(t *testing.T) {
-	testOneCoincidentLine(t, lineCoincidentTests[0][0], lineCoincidentTests[0][1])
 }
 
 // TestPathOpsIntersectRayLineCoincidentT verifies that the coincident-ray branch of intersectRayLine assigns the four

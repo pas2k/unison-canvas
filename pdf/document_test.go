@@ -281,24 +281,6 @@ func TestDocumentMultiPageTree(t *testing.T) {
 	}
 }
 
-func TestDocumentAbort(t *testing.T) {
-	var out stream.MemoryWStream
-	doc := NewDocument(&out, DefaultMetadata())
-	doc.BeginPage(100, 100)
-	doc.EndPage()
-	doc.Abort()
-	doc.Close() // must be a no-op after Abort
-
-	data := out.Bytes()
-	// Abort writes the already-emitted header/info/page bytes but no xref/trailer.
-	if bytes.Contains(data, []byte("trailer")) {
-		t.Error("aborted document must not contain a trailer")
-	}
-	if bytes.Contains(data, []byte("%%EOF")) {
-		t.Error("aborted document must not be finalized with an end-of-file marker")
-	}
-}
-
 func TestDocumentMetadataInTrailer(t *testing.T) {
 	var out stream.MemoryWStream
 	md := DefaultMetadata()
@@ -328,59 +310,56 @@ func TestDocumentMetadataInTrailer(t *testing.T) {
 	}
 }
 
-// TestDocumentCloseFinishesOpenPage closes a document whose only page was begun but never ended. The page's object
-// number was reserved by BeginPage, so Close must finish the page rather than leave a dangling in-use xref entry.
+// TestDocumentCloseFinishesOpenPage closes a document whose last page was begun but never ended, with or without a
+// completed page before it. The page's object number was reserved by BeginPage, so Close must finish the page and
+// append it to the page tree rather than leave a dangling in-use xref entry.
 func TestDocumentCloseFinishesOpenPage(t *testing.T) {
-	var out stream.MemoryWStream
-	doc := NewDocument(&out, DefaultMetadata())
-	page := doc.BeginPage(612, 792)
-	writeText(page.Content(), "q Q\n")
-	doc.Close() // no EndPage
+	for _, c := range []struct {
+		name      string
+		completed int
+	}{
+		{name: "only page", completed: 0},
+		{name: "after a completed page", completed: 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var out stream.MemoryWStream
+			doc := NewDocument(&out, DefaultMetadata())
+			for range c.completed {
+				doc.BeginPage(100, 100)
+				doc.EndPage()
+			}
+			page := doc.BeginPage(612, 792)
+			writeText(page.Content(), "q Q\n")
+			doc.Close() // no EndPage
 
-	p := validatePDF(t, out.Bytes()) // catches the offset-0 xref entry and the /Size overcount
-	foundPage := false
-	for num := range p.objectOffsets {
-		body := p.object(num)
-		if strings.Contains(body, "/Type /Page\n") && strings.Contains(body, "/MediaBox [0 0 612 792]") {
-			foundPage = true
-		}
-	}
-	if !foundPage {
-		t.Error("the unfinished page was dropped instead of being emitted")
-	}
-	if !bytes.Contains(out.Bytes(), []byte("q Q\n")) {
-		t.Error("the unfinished page's content stream was dropped")
-	}
-	// The finished page must be indistinguishable from one closed the normal way.
-	var want stream.MemoryWStream
-	doc2 := NewDocument(&want, DefaultMetadata())
-	writeText(doc2.BeginPage(612, 792).Content(), "q Q\n")
-	doc2.EndPage()
-	doc2.Close()
-	if !bytes.Equal(out.Bytes(), want.Bytes()) {
-		t.Error("closing with an open page differs from an explicit EndPage")
-	}
-}
-
-// TestDocumentCloseFinishesOpenPageAfterCompletedPage covers the mixed case: a completed page followed by an open one.
-// The trailing page must be appended to the page tree, not dropped.
-func TestDocumentCloseFinishesOpenPageAfterCompletedPage(t *testing.T) {
-	var out stream.MemoryWStream
-	doc := NewDocument(&out, DefaultMetadata())
-	doc.BeginPage(100, 100)
-	doc.EndPage()
-	doc.BeginPage(200, 200)
-	doc.Close() // no EndPage for the second page
-
-	p := validatePDF(t, out.Bytes())
-	leaves := 0
-	for num := range p.objectOffsets {
-		if strings.Contains(p.object(num), "/Type /Page\n") {
-			leaves++
-		}
-	}
-	if leaves != 2 {
-		t.Errorf("leaf page count = %d, want 2", leaves)
+			p := validatePDF(t, out.Bytes()) // catches the offset-0 xref entry and the /Size overcount
+			foundPage := false
+			for num := range p.objectOffsets {
+				body := p.object(num)
+				if strings.Contains(body, "/Type /Page\n") && strings.Contains(body, "/MediaBox [0 0 612 792]") {
+					foundPage = true
+				}
+			}
+			if !foundPage {
+				t.Error("the unfinished page was dropped instead of being emitted")
+			}
+			if !bytes.Contains(out.Bytes(), []byte("q Q\n")) {
+				t.Error("the unfinished page's content stream was dropped")
+			}
+			// The finished page must be indistinguishable from one closed the normal way.
+			var want stream.MemoryWStream
+			doc2 := NewDocument(&want, DefaultMetadata())
+			for range c.completed {
+				doc2.BeginPage(100, 100)
+				doc2.EndPage()
+			}
+			writeText(doc2.BeginPage(612, 792).Content(), "q Q\n")
+			doc2.EndPage()
+			doc2.Close()
+			if !bytes.Equal(out.Bytes(), want.Bytes()) {
+				t.Error("closing with an open page differs from an explicit EndPage")
+			}
+		})
 	}
 }
 
@@ -402,21 +381,6 @@ func TestDocumentCloseFinishesOpenCanvasPage(t *testing.T) {
 	}
 	if !foundPage {
 		t.Error("the unfinished canvas page was dropped instead of being emitted")
-	}
-}
-
-// TestDocumentAbortDiscardsOpenPage confirms Close after Abort still writes nothing, even with a page left open: Abort
-// drops the in-progress page rather than deferring it to Close.
-func TestDocumentAbortDiscardsOpenPage(t *testing.T) {
-	var out stream.MemoryWStream
-	doc := NewDocument(&out, DefaultMetadata())
-	doc.BeginPage(100, 100)
-	doc.Abort()
-	doc.Close()
-
-	data := out.Bytes()
-	if bytes.Contains(data, []byte("trailer")) || bytes.Contains(data, []byte("%%EOF")) {
-		t.Error("aborted document was finalized by Close")
 	}
 }
 
@@ -458,38 +422,57 @@ func TestDocumentWritesNothingAfterClose(t *testing.T) {
 	}
 }
 
-// TestDocumentWritesNothingAfterAbort is the Abort half of the same contract. Abort drops the page list, so a BeginPage
-// afterwards would take the first-page path again and write a second %PDF header (resetting the offset map's base) into
-// a document whose doc comment promises nothing further is written.
+// TestDocumentWritesNothingAfterAbort is the Abort half of the same contract. Abort writes no xref/trailer and drops
+// an open page rather than deferring it to Close. It also drops the page list, so a BeginPage afterwards would take the
+// first-page path again and write a second %PDF header (resetting the offset map's base) into a document whose doc
+// comment promises nothing further is written.
 func TestDocumentWritesNothingAfterAbort(t *testing.T) {
-	var out stream.MemoryWStream
-	doc := NewDocument(&out, DefaultMetadata())
-	writeText(doc.BeginPage(100, 100).Content(), "q Q\n")
-	doc.EndPage()
-	doc.Abort()
-	aborted := append([]byte(nil), out.Bytes()...)
+	for _, tc := range []struct {
+		name    string
+		endPage bool
+	}{
+		{name: "after a completed page", endPage: true},
+		{name: "with a page left open", endPage: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out stream.MemoryWStream
+			doc := NewDocument(&out, DefaultMetadata())
+			writeText(doc.BeginPage(100, 100).Content(), "q Q\n")
+			if tc.endPage {
+				doc.EndPage()
+			}
+			doc.Abort()
+			aborted := append([]byte(nil), out.Bytes()...)
 
-	if p := doc.BeginPage(50, 50); p != nil {
-		t.Error("BeginPage after Abort returned a page")
-	}
-	if c := doc.BeginPageCanvas(50, 50); c != nil {
-		t.Error("BeginPageCanvas after Abort returned a canvas")
-	}
-	if ref := doc.Emit(NewDict()); ref.IsValid() {
-		t.Error("Emit after Abort returned a valid reference")
-	}
-	if ref := doc.StreamOut(nil, []byte("past the end of the file"), false); ref.IsValid() {
-		t.Error("StreamOut after Abort returned a valid reference")
-	}
-	doc.EndPage()
-	doc.Close()
+			if p := doc.BeginPage(50, 50); p != nil {
+				t.Error("BeginPage after Abort returned a page")
+			}
+			if c := doc.BeginPageCanvas(50, 50); c != nil {
+				t.Error("BeginPageCanvas after Abort returned a canvas")
+			}
+			if ref := doc.Emit(NewDict()); ref.IsValid() {
+				t.Error("Emit after Abort returned a valid reference")
+			}
+			if ref := doc.StreamOut(nil, []byte("past the end of the file"), false); ref.IsValid() {
+				t.Error("StreamOut after Abort returned a valid reference")
+			}
+			doc.EndPage()
+			doc.Close()
 
-	data := out.Bytes()
-	if !bytes.Equal(data, aborted) {
-		t.Errorf("%d bytes were written after Abort: %q", len(data)-len(aborted), data[len(aborted):])
-	}
-	if n := bytes.Count(data, []byte("%PDF-1.4")); n != 1 {
-		t.Errorf("file header count = %d, want 1", n)
+			data := out.Bytes()
+			if !bytes.Equal(data, aborted) {
+				t.Errorf("%d bytes were written after Abort: %q", len(data)-len(aborted), data[len(aborted):])
+			}
+			if n := bytes.Count(data, []byte("%PDF-1.4")); n != 1 {
+				t.Errorf("file header count = %d, want 1", n)
+			}
+			if bytes.Contains(data, []byte("trailer")) {
+				t.Error("aborted document must not contain a trailer")
+			}
+			if bytes.Contains(data, []byte("%%EOF")) {
+				t.Error("aborted document must not be finalized with an end-of-file marker")
+			}
+		})
 	}
 }
 

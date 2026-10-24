@@ -107,6 +107,10 @@ func TestAtlasTextOpRecordAndFlush(t *testing.T) {
 	if len(op.recordedDraws) != 1 {
 		t.Fatalf("recorded draws = %d, want 1", len(op.recordedDraws))
 	}
+	// Small axis-aligned text stays on the direct-mask bitmap-text lane even though the context supports SDFT.
+	if _, isBitmap := op.gp.(*bitmapTextGeoProc); !isBitmap {
+		t.Fatalf("gp is %T, want *bitmapTextGeoProc", op.gp)
+	}
 
 	// A redraw of the first blob reuses the cached Blob (no new subrun conversion) and, with every glyph already in
 	// the atlas, uploads nothing new.
@@ -176,44 +180,6 @@ func TestAtlasTextMergeGates(t *testing.T) {
 	c.DrawTextBlob(makeTestBlob(t, emoji, "\U0001F600"), 4, 60, paint)
 	if got := sdc.GetOpsTask().NumOpChains() - chainsBefore; got != 2 {
 		t.Fatalf("op chains = %d, want 2 (A8 and ARGB must not merge)", got)
-	}
-	dc.FlushAndSubmit(false)
-}
-
-func TestGLDeviceTextPathLane(t *testing.T) {
-	// Text beyond the SubRunControl's max glyphs-as-paths font size (per-OS: mac 256, linux/windows 324) exceeds every
-	// atlas gate: the PathSubRun re-enters the canvas as path draws, which ride the SDC shape funnel instead of
-	// AtlasTextOp. The size is derived from the device's own control rather than hard-coded so the test holds on every
-	// GOOS (a fixed 300px was path-lane on darwin but inside the SDFT window elsewhere); the per-OS boundary itself is
-	// pinned GOOS-independently by TestGLDeviceTextLaneBoundariesPerOS.
-	dc := newShaderRecordingContext(t)
-	sdc := newDrawTestSDC(t, dc, 128, 128)
-	defer sdc.Release()
-
-	dev := NewDevice(sdc)
-	c := canvas.New(dev)
-
-	control := dc.GetSubRunControl(false)
-	oversized := control.MaxSize() + 44
-	paint := canvas.NewPaint()
-	paint.AntiAlias = true
-	identity := geom.IdentityMatrix()
-	// Precondition: with the identity CTM the approximate device text size equals the font size, and this size must be
-	// beyond both atlas decisions on this configuration.
-	if control.IsSDFT(oversized, paint, &identity) || control.IsDirect(oversized, paint, &identity) {
-		t.Fatalf("size %v is not beyond the atlas gates (max %v)", oversized, control.MaxSize())
-	}
-
-	f := loadAtlasTestFont(t, "Roboto-Regular.ttf", oversized)
-	chainsBefore := sdc.GetOpsTask().NumOpChains()
-	c.DrawTextBlob(makeTestBlob(t, f, "Q"), 0, 120, paint)
-	if got := sdc.GetOpsTask().NumOpChains() - chainsBefore; got == 0 {
-		t.Fatal("path-lane text must record draw ops")
-	}
-	for i := chainsBefore; i < sdc.GetOpsTask().NumOpChains(); i++ {
-		if _, isAtlas := sdc.GetOpsTask().GetChainHead(i).(*AtlasTextOp); isAtlas {
-			t.Fatal("oversized text must not ride AtlasTextOp")
-		}
 	}
 	dc.FlushAndSubmit(false)
 }

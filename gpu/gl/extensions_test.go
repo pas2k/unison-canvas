@@ -85,50 +85,49 @@ func (d *fakeDriver) procs() (getString, getStringi, getIntegerv uintptr) {
 	return extGetString, extGetStringi, extGetIntegerv
 }
 
-func TestExtensionsInitIndexed(t *testing.T) {
-	d := &fakeDriver{
-		version:    "4.1 Fake Driver",
-		extensions: []string{"GL_Z_last", "GL_ARB_sync", "GL_A_first"},
-		indexed:    true,
-	}
-	getString, getStringi, getIntegerv := d.procs()
-	var e Extensions
-	if !e.Init(StandardGL, getString, getStringi, getIntegerv, 0, EGLNoDisplay) {
-		t.Fatal("Init failed")
-	}
-	if !e.IsInitialized() {
-		t.Fatal("not initialized after Init")
-	}
-	for _, ext := range d.extensions {
-		if !e.Has(ext) {
-			t.Errorf("missing %s", ext)
+func TestExtensionsInitLoadsExtensions(t *testing.T) {
+	for _, tc := range []struct {
+		d    *fakeDriver
+		name string
+	}{
+		{
+			name: "indexed",
+			d: &fakeDriver{
+				version:    "4.1 Fake Driver",
+				extensions: []string{"GL_Z_last", "GL_ARB_sync", "GL_A_first"},
+				indexed:    true,
+			},
+		},
+		{
+			// A pre-3.0 version string forces the space-separated GL_EXTENSIONS path.
+			name: "space-separated",
+			d: &fakeDriver{
+				version:    "2.1 Fake Driver",
+				extensions: []string{"GL_EXT_framebuffer_object", "GL_ARB_texture_storage"},
+			},
+		},
+	} {
+		getString, getStringi, getIntegerv := tc.d.procs()
+		var e Extensions
+		if !e.Init(StandardGL, getString, getStringi, getIntegerv, 0, EGLNoDisplay) {
+			t.Fatalf("%s: Init failed", tc.name)
 		}
-	}
-	if e.Has("GL_absent") {
-		t.Error("Has(absent) = true")
-	}
-	all := e.All()
-	for i := 1; i < len(all); i++ {
-		if all[i-1] >= all[i] {
-			t.Fatalf("extension list not sorted: %v", all)
+		if !e.IsInitialized() {
+			t.Fatalf("%s: not initialized after Init", tc.name)
 		}
-	}
-}
-
-func TestExtensionsInitNonIndexed(t *testing.T) {
-	// A pre-3.0 version string forces the space-separated GL_EXTENSIONS path.
-	d := &fakeDriver{
-		version:    "2.1 Fake Driver",
-		extensions: []string{"GL_EXT_framebuffer_object", "GL_ARB_texture_storage"},
-	}
-	getString, getStringi, getIntegerv := d.procs()
-	var e Extensions
-	if !e.Init(StandardGL, getString, getStringi, getIntegerv, 0, EGLNoDisplay) {
-		t.Fatal("Init failed")
-	}
-	for _, ext := range d.extensions {
-		if !e.Has(ext) {
-			t.Errorf("missing %s", ext)
+		for _, ext := range tc.d.extensions {
+			if !e.Has(ext) {
+				t.Errorf("%s: missing %s", tc.name, ext)
+			}
+		}
+		if e.Has("GL_absent") {
+			t.Errorf("%s: Has(absent) = true", tc.name)
+		}
+		all := e.All()
+		for i := 1; i < len(all); i++ {
+			if all[i-1] >= all[i] {
+				t.Fatalf("%s: extension list not sorted: %v", tc.name, all)
+			}
 		}
 	}
 }

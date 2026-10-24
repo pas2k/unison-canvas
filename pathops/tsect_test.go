@@ -67,14 +67,6 @@ var quadraticStandardTests = [][2]dQuad{
 	{dq(1, 0, 2, 6, 3, 0), dq(0, 1, 6, 2, 0, 3)}, // four intersections
 }
 
-func TestPathOpsQuadIntersectionOneOff(t *testing.T) {
-	quadOneOffTest(t, 0, 1)
-}
-
-func TestPathOpsQuadIntersectionCoincidenceOneOff(t *testing.T) {
-	quadCoincidentTestOne(t, 0, 1)
-}
-
 func TestPathOpsQuadIntersection(t *testing.T) {
 	// oneOffTests: every ordered pair (outer < inner) in the corpus.
 	for outer := 0; outer < len(quadIntersectTestSet)-1; outer++ {

@@ -1151,46 +1151,6 @@ func TestFaceRecCovers(t *testing.T) {
 	}
 }
 
-// TestEnumerationSkipsFamiliesThatCanNameNoFace covers the enumeration filter (see Manager.enumerated). Stock macOS
-// ships one such family (Supplemental/NISC18030.ttf, which carries no head table): enumerated, it would offer a font
-// picker an entry reading "gb18030bitmap" that selects nothing, since both MatchFamilyStyle and CreateTypeface answer
-// nil for it.
-func TestEnumerationSkipsFamiliesThatCanNameNoFace(t *testing.T) {
-	const ghostKey = "gb18030bitmap" // sorts before "roboto", so it would be family 0 of the enumeration
-	ghost := &faceRec{key: ghostKey, path: "../font/testdata/does-not-exist.ttf"}
-	good := newTestFaceRec(t, "Roboto-Regular.ttf", 0)
-	m := newManager([]*faceRec{ghost, good})
-
-	if got := m.CountFamilies(); got != 1 {
-		t.Fatalf("CountFamilies = %d, want 1 (the ghost family names no face)", got)
-	}
-	info, err := font.DescribeFaceFile("../font/testdata/Roboto-Regular.ttf", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := m.FamilyName(0); got != info.Family {
-		t.Errorf("FamilyName(0) = %q, want the loadable family's display name %q", got, info.Family)
-	}
-	// Every enumerated family names a real face, and every one of them can be turned back into a typeface.
-	for i := range m.CountFamilies() {
-		name := m.FamilyName(i)
-		if name == ghostKey {
-			t.Errorf("family %d is the ghost family", i)
-		}
-		if tf := m.MatchFamilyStyle(name, font.NormalStyle()); tf == nil {
-			t.Errorf("family %d (%q) is enumerated but produces no typeface", i, name)
-		}
-	}
-	// The ghost stays matchable by name and reachable through the style set, exactly as a hidden family does; only the
-	// enumeration drops it.
-	if got := m.MatchFamily(ghostKey).Count(); got != 1 {
-		t.Errorf("MatchFamily(%q).Count() = %d, want 1", ghostKey, got)
-	}
-	if tf := m.MatchFamilyStyle(ghostKey, font.NormalStyle()); tf != nil {
-		t.Errorf("the ghost family produced a typeface: %v", tf)
-	}
-}
-
 func TestManagerUnloadableFace(t *testing.T) {
 	// A face whose file has vanished since the scan: metadata falls back to the footprint aspect, typeface creation
 	// fails, and style matching skips it in rank order rather than failing.
@@ -1235,6 +1195,27 @@ func TestManagerUnloadableFace(t *testing.T) {
 	// And it is still the last-resort default family, since there is no enumerable one to prefer.
 	if got := ghostOnly.lookupOrDefault(""); got != ghostOnly.families[0] {
 		t.Errorf("lookupOrDefault(\"\") = %v, want the only family", got)
+	}
+	// A ghost family that sorts ahead of a loadable one must not take its place as family 0. Stock macOS ships one
+	// (Supplemental/NISC18030.ttf, which carries no head table).
+	const ghostKey = "gb18030bitmap" // sorts before "roboto"
+	ghostFirst := newManager([]*faceRec{
+		{key: ghostKey, path: "../font/testdata/does-not-exist.ttf"},
+		newTestFaceRec(t, "Roboto-Regular.ttf", 0),
+	})
+	if got := ghostFirst.CountFamilies(); got != 1 {
+		t.Fatalf("CountFamilies = %d, want 1 (the ghost family names no face)", got)
+	}
+	info, err := font.DescribeFaceFile("../font/testdata/Roboto-Regular.ttf", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := ghostFirst.FamilyName(0)
+	if name != info.Family {
+		t.Errorf("FamilyName(0) = %q, want the loadable family's display name %q", name, info.Family)
+	}
+	if ghostFirst.MatchFamilyStyle(name, font.NormalStyle()) == nil {
+		t.Errorf("family 0 (%q) is enumerated but produces no typeface", name)
 	}
 }
 
@@ -1693,14 +1674,6 @@ func TestDefaultMemoizesTheOneScan(t *testing.T) {
 			t.Errorf("%d scans, want exactly 1 (a failure is never retried)", *calls)
 		}
 	})
-}
-
-// TestSystemFontCacheDirIsUsable pins that the cache directory Default resolves is writable, or "" (which leaves
-// fontscan its own choice and its own error).
-func TestSystemFontCacheDirIsUsable(t *testing.T) {
-	if dir := systemFontCacheDir(); dir != "" && !cacheDirWritable(dir) {
-		t.Errorf("systemFontCacheDir() = %q, which is not writable", dir)
-	}
 }
 
 // TestScanLoggerKeepsTheLastLines pins the bound on the captured scan log: fontscan logs a line per unreadable font

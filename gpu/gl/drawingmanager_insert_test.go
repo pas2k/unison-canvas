@@ -18,6 +18,7 @@
 package gl
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/richardwilkes/canvas/geom"
@@ -56,61 +57,60 @@ func blockerInvariantHolds(dm *DrawingManager) bool {
 	return true
 }
 
-// TestInsertTaskBeforeLastBumpsTrailingBlockerIndex verifies that inserting a task ahead of a trailing reorder blocker
-// advances the blocker's recorded index so it keeps pointing at the blocker (not at the freshly inserted task).
-func TestInsertTaskBeforeLastBumpsTrailingBlockerIndex(t *testing.T) {
-	dm := &DrawingManager{}
-	a := newStubRenderTask(false)
-	blocker := newStubRenderTask(true)
-	dm.appendTask(a)       // dag=[a]
-	dm.appendTask(blocker) // dag=[a, blocker], reorderBlockerTaskIndices=[1]
+// TestInsertTaskBeforeLastKeepsBlockerIndexOnBlocker verifies that the recorded blocker index keeps pointing at the
+// blocker (not at the freshly inserted task): it advances when the blocker is the last task and, so the predicate does
+// not over-fire, stays put when an earlier task is the blocker.
+func TestInsertTaskBeforeLastKeepsBlockerIndexOnBlocker(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		blockerFirst bool // dag=[blocker, other] before the insert, rather than [other, blocker]
+		wantIndex    int  // the blocker's recorded index after the insert
+	}{
+		{name: "trailing-blocker-advances", wantIndex: 2},
+		{name: "earlier-blocker-stays", blockerFirst: true, wantIndex: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dm := &DrawingManager{}
+			other := newStubRenderTask(false)
+			blocker := newStubRenderTask(true)
+			if tc.blockerFirst {
+				dm.appendTask(blocker)
+				dm.appendTask(other)
+			} else {
+				dm.appendTask(other)
+				dm.appendTask(blocker)
+			}
 
-	inserted := newStubRenderTask(false)
-	dm.insertTaskBeforeLast(inserted) // want dag=[a, inserted, blocker], reorderBlockerTaskIndices=[2]
+			inserted := newStubRenderTask(false)
+			dm.insertTaskBeforeLast(inserted)
 
-	if got := len(dm.dag); got != 3 {
-		t.Fatalf("dag length = %d, want 3", got)
-	}
-	if dm.dag[2] != RenderTask(blocker) {
-		t.Errorf("blocker not at the tail after insert; dag[2] is %p, blocker is %p", dm.dag[2], blocker)
-	}
-	if dm.dag[1] != RenderTask(inserted) {
-		t.Errorf("inserted task not placed before the blocker; dag[1] is %p, inserted is %p", dm.dag[1], inserted)
-	}
-	if n := len(dm.reorderBlockerTaskIndices); n != 1 || dm.reorderBlockerTaskIndices[0] != 2 {
-		t.Errorf("reorderBlockerTaskIndices = %v, want [2]", dm.reorderBlockerTaskIndices)
-	}
-	if !blockerInvariantHolds(dm) {
-		t.Errorf("blocker index no longer points at a reorder-blocking task: %v", dm.reorderBlockerTaskIndices)
-	}
-	// sortTasks partitions on the blocker index; a stale index would place the boundary on the wrong task. It must at
-	// least not panic here, and the resulting spans must respect the (corrected) boundary.
-	dm.sortTasks()
-	if a.index != 0 || inserted.index != 1 {
-		t.Errorf("span before the blocker sorted wrong: a.index=%d inserted.index=%d, want 0 and 1", a.index,
-			inserted.index)
-	}
-}
-
-// TestInsertTaskBeforeLastLeavesNonTrailingBlockerIndex verifies the predicate does not over-fire: when the current
-// last task is not a reorder blocker, an earlier blocker's index must stay put.
-func TestInsertTaskBeforeLastLeavesNonTrailingBlockerIndex(t *testing.T) {
-	dm := &DrawingManager{}
-	blocker := newStubRenderTask(true)
-	last := newStubRenderTask(false)
-	dm.appendTask(blocker) // dag=[blocker], reorderBlockerTaskIndices=[0]
-	dm.appendTask(last)    // dag=[blocker, last]
-
-	inserted := newStubRenderTask(false)
-	dm.insertTaskBeforeLast(inserted) // want dag=[blocker, inserted, last], reorderBlockerTaskIndices=[0]
-
-	if dm.dag[0] != RenderTask(blocker) {
-		t.Errorf("blocker moved unexpectedly; dag[0] is %p, blocker is %p", dm.dag[0], blocker)
-	}
-	if n := len(dm.reorderBlockerTaskIndices); n != 1 || dm.reorderBlockerTaskIndices[0] != 0 {
-		t.Errorf("reorderBlockerTaskIndices = %v, want [0]", dm.reorderBlockerTaskIndices)
-	}
-	if !blockerInvariantHolds(dm) {
-		t.Errorf("blocker index no longer points at a reorder-blocking task: %v", dm.reorderBlockerTaskIndices)
+			if got := len(dm.dag); got != 3 {
+				t.Fatalf("dag length = %d, want 3", got)
+			}
+			if dm.dag[tc.wantIndex] != RenderTask(blocker) {
+				t.Errorf("blocker not at dag[%d] after insert; it holds %p, blocker is %p", tc.wantIndex,
+					dm.dag[tc.wantIndex], blocker)
+			}
+			if dm.dag[1] != RenderTask(inserted) {
+				t.Errorf("inserted task not placed before the last task; dag[1] is %p, inserted is %p", dm.dag[1],
+					inserted)
+			}
+			if n := len(dm.reorderBlockerTaskIndices); n != 1 || dm.reorderBlockerTaskIndices[0] != tc.wantIndex {
+				t.Errorf("reorderBlockerTaskIndices = %v, want [%d]", dm.reorderBlockerTaskIndices, tc.wantIndex)
+			}
+			if !blockerInvariantHolds(dm) {
+				t.Errorf("blocker index no longer points at a reorder-blocking task: %v",
+					dm.reorderBlockerTaskIndices)
+			}
+			// sortTasks partitions on the blocker index; a stale index would place the boundary on the wrong task. It
+			// must at least not panic here, and the span before the blocker must keep its (dependency-free) order.
+			span := slices.Clone(dm.dag[:tc.wantIndex])
+			dm.sortTasks()
+			for i, task := range span {
+				if got := task.taskBase().index; got != uint32(i) {
+					t.Errorf("span before the blocker sorted wrong: task %d has index %d", i, got)
+				}
+			}
+		})
 	}
 }

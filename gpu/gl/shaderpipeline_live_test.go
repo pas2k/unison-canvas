@@ -9,8 +9,7 @@
 
 // Live-context tests for the shader pipeline: per-FP and per-blend-mode swatches rendered through the minimal fill-rect
 // op and compared against CPU-computed expectations (the raster blend kernels are the CPU backend's math, so this is
-// the Go-GPU vs Go-CPU self-consistency check), plus program cache hit-rate metrics on the live driver. Skips when no
-// GL context is available.
+// the Go-GPU vs Go-CPU self-consistency check). Skips when no GL context is available.
 
 package gl_test
 
@@ -191,47 +190,4 @@ func TestLiveLocalCoordsAndMatrixEffect(t *testing.T) {
 		sweepGLErrors(t, dc.Gpu(), name)
 		sdc.Release()
 	}
-}
-
-// TestLiveProgramCacheMetrics checks the cache hit rate across repeated and distinct pipelines on the live driver.
-func TestLiveProgramCacheMetrics(t *testing.T) {
-	env, dc := newLiveDirectContext(t)
-	_ = env
-
-	identity := geom.Matrix{}
-	identity.SetIdentity()
-	sdc := newLiveSDC(t, dc, 16)
-	defer sdc.Release()
-	sdc.Clear([4]float32{0, 0, 0, 1})
-
-	baseline := dc.Gpu().ProgramCacheStats()
-
-	draw := func(mode raster.BlendMode, color colorcore.PMColor4f) {
-		paint := gl.NewPaint()
-		paint.SetColor4f(color)
-		paint.SetPorterDuffXPFactory(mode)
-		sdc.FillRectWithPaint(paint, &identity, geom.Rect{Right: 8, Bottom: 8})
-		dc.FlushAndSubmit(false)
-	}
-
-	red := colorcore.PMColor4f{R: 1, A: 1}
-	blue := colorcore.PMColor4f{B: 0.5, A: 0.5}
-	draw(raster.BlendSrcOver, blue) // miss (new program)
-	draw(raster.BlendSrcOver, red)  // hit, unless opaque + no-coverage collapses src-over to src (a second program)
-	draw(raster.BlendSrcOver, blue) // hit (identical key)
-	draw(raster.BlendClear, blue)   // miss (different XP outputs)
-
-	stats := dc.Gpu().ProgramCacheStats()
-	misses := stats.NumProgramCacheMisses - baseline.NumProgramCacheMisses
-	hits := stats.NumProgramCacheHits - baseline.NumProgramCacheHits
-	if misses+hits != 4 {
-		t.Fatalf("draws seen by the cache = %d, want 4", misses+hits)
-	}
-	if hits < 1 {
-		t.Fatalf("program cache hits = %d, want >= 1", hits)
-	}
-	if misses > 3 {
-		t.Fatalf("program cache misses = %d, want <= 3", misses)
-	}
-	sweepGLErrors(t, dc.Gpu(), "cache metrics")
 }

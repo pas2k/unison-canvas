@@ -22,8 +22,8 @@ import (
 )
 
 // TestDocumentDrawPaintAndClear drives a full-page paint fill through the page canvas: a full-page Clear (an opaque src
-// draw that the fast-path reduces to src-over) plus an explicit DrawPaint, then verifies the document serializes
-// structurally and the drawn page carries more content than an empty one.
+// draw that the fast-path reduces to src-over) plus an explicit DrawPaint, then verifies that both it and an empty page
+// serialize structurally and that the drawn page carries more content than the empty one.
 func TestDocumentDrawPaintAndClear(t *testing.T) {
 	var out stream.MemoryWStream
 	doc := NewDocument(&out, &Metadata{Title: "DrawPaint"})
@@ -52,6 +52,7 @@ func TestDocumentDrawPaintAndClear(t *testing.T) {
 	empty.BeginPageCanvas(120, 90)
 	empty.EndPage()
 	empty.Close()
+	validatePDF(t, emptyOut.Bytes())
 	if len(data) <= len(emptyOut.Bytes()) {
 		t.Error("draw-paint page is not larger than an empty page")
 	}

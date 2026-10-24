@@ -142,9 +142,10 @@ func TestFaceRunesDataFiltersUnmappedGlyphs(t *testing.T) {
 	}
 }
 
-// TestFaceRunesDataUnknowable pins the nil contract: everything that makes the answer unknowable yields nil, matching
-// FaceCoversRuneData's false. fontmgr.NewFromData walks every face of every supplied blob, so these are ordinary inputs
-// for it rather than error cases.
+// TestFaceRunesDataUnknowable pins the unknowable contract: everything that makes the answer unknowable yields nil from
+// FaceRunesData and false from FaceCoversRune*, the same treatment a face whose typeface fails to load gets from the
+// font manager. fontmgr.NewFromData walks every face of every supplied blob, so these are ordinary inputs for it rather
+// than error cases.
 func TestFaceRunesDataUnknowable(t *testing.T) {
 	roboto := readTestFont(t, "Roboto-Regular.ttf")
 	for _, c := range []struct {
@@ -164,7 +165,13 @@ func TestFaceRunesDataUnknowable(t *testing.T) {
 			if got := FaceRunesData(c.data, c.index); got != nil {
 				t.Errorf("FaceRunesData returned %d runes, want nil", len(got))
 			}
+			if FaceCoversRuneData(c.data, c.index, 'A') {
+				t.Error("FaceCoversRuneData reported coverage")
+			}
 		})
+	}
+	if FaceCoversRuneFile("testdata/does-not-exist.ttf", 0, 'A') {
+		t.Error("missing file reported coverage")
 	}
 }
 
@@ -226,32 +233,5 @@ func TestFaceRunesDataBoundsTheCmapWalk(t *testing.T) {
 	// The bound is far above any real font's coverage, so the unpatched face is unaffected by it.
 	if got := len(FaceRunesData(roboto, 0)); got == 0 || got >= maxCmapEntries {
 		t.Errorf("Roboto covers %d runes, want a nonzero count well below the %d bound", got, maxCmapEntries)
-	}
-}
-
-func TestFaceCoversRuneUnknowable(t *testing.T) {
-	// Anything that makes the answer unknowable reports false, the same treatment a face whose typeface fails to load
-	// gets from the font manager.
-	if FaceCoversRuneFile("testdata/does-not-exist.ttf", 0, 'A') {
-		t.Error("missing file reported coverage")
-	}
-	for _, index := range []int{-1, 2, 99} {
-		if FaceCoversRuneFile("testdata/test.ttc", index, 'A') {
-			t.Errorf("collection index %d (of 2 faces) reported coverage", index)
-		}
-	}
-	if FaceCoversRuneData(nil, 0, 'A') {
-		t.Error("nil data reported coverage")
-	}
-	if FaceCoversRuneData([]byte("not a font at all"), 0, 'A') {
-		t.Error("garbage data reported coverage")
-	}
-	// A real font truncated to its 12-byte header has no readable table directory.
-	data, err := os.ReadFile("testdata/Roboto-Regular.ttf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if FaceCoversRuneData(data[:12], 0, 'A') {
-		t.Error("truncated data reported coverage")
 	}
 }

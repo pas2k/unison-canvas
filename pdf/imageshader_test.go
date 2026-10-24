@@ -50,8 +50,13 @@ func countPatternType1(data []byte) int {
 
 func TestImageShaderClampTilingPattern(t *testing.T) {
 	img := solidRGBAImage(t, 4, 4, 0x40, 0x80, 0xC0, 0xFF)
-	s := shaders.NewImage(img, shaders.TileClamp, shaders.TileClamp, shaders.SamplingOptions{}, nil)
-	data := renderImageShaderPage(t, 100, 100, s)
+	p := canvas.NewPaint()
+	p.Color = colorcore.ARGB(255, 200, 30, 40) // .7843 .1176 .1569
+	p.Shader = shaders.NewImage(img, shaders.TileClamp, shaders.TileClamp, shaders.SamplingOptions{}, nil)
+	data := renderPDFUncompressed(t, 100, 100, func(c *canvas.Canvas) {
+		c.DrawRect(geom.RectLTRB(0, 0, 100, 100), p)
+	})
+	validatePDF(t, data)
 
 	// The page selects a /Pattern color space and paints with the pattern.
 	if !bytes.Contains(data, []byte("/Pattern cs")) {
@@ -59,6 +64,22 @@ func TestImageShaderClampTilingPattern(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte(" scn\n")) {
 		t.Error("page content does not set the pattern with scn")
+	}
+	// The page content stream is the one carrying the page's top-left → bottom-left flip; the pattern cell's stream
+	// also holds a "cm", so it cannot be picked by that alone.
+	var content string
+	for _, s := range allStreamContents(data) {
+		if strings.Contains(s, "1 0 0 -1 0 100 cm\n") {
+			content = s
+			break
+		}
+	}
+	if content == "" {
+		t.Fatalf("no page content stream\nstreams=%v", allStreamContents(data))
+	}
+	// The paint color would have shown up as an "rg" fill.
+	if strings.Contains(content, ".7843 .1176 .1569 rg") {
+		t.Errorf("the image shader's fill fell back to the paint color\n--- content ---\n%s", content)
 	}
 	// A colored, constant-spacing tiling pattern (PatternType 1 / PaintType 1 / TilingType 1) is emitted.
 	if !anyObjectContains(data, "/PatternType 1", "/PaintType 1", "/TilingType 1") {

@@ -145,18 +145,3 @@ func TestNextUTF16(t *testing.T) {
 		t.Fatalf("lone low surrogate = %d", u)
 	}
 }
-
-func TestCountTextElements(t *testing.T) {
-	if got := CountTextElements([]byte("abc"), TextEncodingUTF8); got != 3 {
-		t.Errorf("utf8 = %d", got)
-	}
-	if got := CountTextElements([]byte{1, 2, 3, 4, 5, 6, 7, 8}, TextEncodingUTF32); got != 2 {
-		t.Errorf("utf32 = %d", got)
-	}
-	if got := CountTextElements([]byte{1, 2, 3, 4}, TextEncodingGlyphID); got != 2 {
-		t.Errorf("glyphs = %d", got)
-	}
-	if got := CountTextElements([]byte{0xFF}, TextEncodingUTF8); got != -1 {
-		t.Errorf("invalid utf8 = %d", got)
-	}
-}

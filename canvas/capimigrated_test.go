@@ -15,18 +15,15 @@ import (
 	"math"
 	"testing"
 
-	"github.com/richardwilkes/canvas/font"
 	"github.com/richardwilkes/canvas/geom"
-	"github.com/richardwilkes/canvas/imagecore"
-	"github.com/richardwilkes/canvas/maskfilter"
 	"github.com/richardwilkes/canvas/path"
 	"github.com/richardwilkes/canvas/raster"
-	"github.com/richardwilkes/canvas/shaders"
 	"github.com/richardwilkes/canvas/stroke"
 )
 
-// TestCanvasSkewAndResetMatrix verifies Skew composes the same skew matrix SetSkew builds, and ResetMatrix returns the
-// CTM to identity regardless of what preceded it.
+// TestCanvasSkewAndResetMatrix verifies Skew composes the same skew matrix SetSkew builds, rotating by
+// RadiansToDegrees(pi/2) builds (approximately) the same matrix as SetRotate(90), and ResetMatrix returns the CTM to
+// identity regardless of what preceded it.
 func TestCanvasSkewAndResetMatrix(t *testing.T) {
 	c, _ := newWhiteCanvas()
 	c.Translate(3, 5)
@@ -42,42 +39,25 @@ func TestCanvasSkewAndResetMatrix(t *testing.T) {
 		t.Errorf("Skew matrix = %v, want %v", got.As9(), ref.As9())
 	}
 
-	c.Rotate(37)
-	c.Scale(2, 0.5)
-	c.ResetMatrix()
-	identity := geom.IdentityMatrix()
-	if m := c.TotalMatrix(); !m.CheapEqual(&identity) {
-		t.Errorf("ResetMatrix gave %v, want identity", m.As9())
-	}
-}
-
-// TestCanvasRotateRadiansConversion pins geom.RadiansToDegrees through the canvas rotate lane: rotating by pi/2 radians
-// must build (approximately) the same matrix as rotating by 90 degrees.
-func TestCanvasRotateRadiansConversion(t *testing.T) {
-	c, _ := newWhiteCanvas()
-	c.Rotate(geom.RadiansToDegrees(float32(math.Pi / 2)))
-	var want geom.Matrix
-	want.SetRotate(90)
-	got := c.TotalMatrix()
-	g, w := got.As9(), want.As9()
+	r, _ := newWhiteCanvas()
+	r.Rotate(geom.RadiansToDegrees(float32(math.Pi / 2)))
+	var rot geom.Matrix
+	rot.SetRotate(90)
+	rm := r.TotalMatrix()
+	g, w := rm.As9(), rot.As9()
 	for i := range g {
 		if d := g[i] - w[i]; d > 1e-3 || d < -1e-3 {
 			t.Errorf("rotate(RadiansToDegrees(pi/2)) matrix = %v, want ~rotate(90) %v", g, w)
 			break
 		}
 	}
-}
 
-// TestCanvasLocalClipBoundsEmpty covers LocalClipBounds' empty-clip lane: intersecting with a rect off the device
-// leaves an empty clip, and the local bounds collapse to the zero rect.
-func TestCanvasLocalClipBoundsEmpty(t *testing.T) {
-	c, _ := newWhiteCanvas()
-	if b := c.LocalClipBounds(); b.IsEmpty() {
-		t.Fatalf("fresh canvas local clip bounds %v should not be empty", b)
-	}
-	c.ClipRect(geom.RectLTRB(cvW+50, cvH+50, cvW+60, cvH+60), raster.ClipIntersect, false)
-	if b := c.LocalClipBounds(); b != (geom.Rect{}) {
-		t.Errorf("empty clip local bounds = %v, want the zero rect", b)
+	c.Rotate(37)
+	c.Scale(2, 0.5)
+	c.ResetMatrix()
+	identity := geom.IdentityMatrix()
+	if m := c.TotalMatrix(); !m.CheapEqual(&identity) {
+		t.Errorf("ResetMatrix gave %v, want identity", m.As9())
 	}
 }
 
@@ -137,39 +117,6 @@ func TestCanvasDrawPointMatchesDrawPoints(t *testing.T) {
 	}
 }
 
-// TestDrawImageNineCleansPaint verifies cleanPaintForLattice on the nine-patch lane: the paint's mask filter and
-// anti-alias flag are stripped, so a paint carrying them renders identically to one without.
-func TestDrawImageNineCleansPaint(t *testing.T) {
-	info, _ := imagecore.MakeInfo(6, 6, imagecore.ColorTypeRGBA8888, imagecore.AlphaTypeOpaque)
-	p := imagecore.NewPixels(info)
-	for y := int32(0); y < 6; y++ {
-		for x := int32(0); x < 6; x++ {
-			col := uint32(0xFF0000FF)
-			if x >= 2 && x < 4 && y >= 2 && y < 4 {
-				col = 0xFF00FF00
-			}
-			p.Words[y*6+x] = col
-		}
-	}
-	img := imagecore.FromPixels(p)
-	center := geom.IRect{Left: 2, Top: 2, Right: 4, Bottom: 4}
-
-	dirty := NewPaint()
-	dirty.AntiAlias = true
-	dirty.MaskFilter = maskfilter.NewBlur(maskfilter.BlurNormal, 2, true)
-
-	c1, p1 := newWhiteCanvas()
-	c1.DrawImageNine(img, center, geom.RectWH(16, 16), shaders.FilterNearest, dirty)
-	c2, p2 := newWhiteCanvas()
-	c2.DrawImageNine(img, center, geom.RectWH(16, 16), shaders.FilterNearest, NewPaint())
-
-	for i := range p1.Pix {
-		if p1.Pix[i] != p2.Pix[i] {
-			t.Fatal("nine-patch draw with a mask-filtered AA paint should render as if the paint were cleaned")
-		}
-	}
-}
-
 // TestPaintFillPathStroke exercises Paint.FillPath through to the stroker (the entry point behind unison's
 // get-fill-path use): a stroked rectangle becomes a filled outline (true), while a zero-width hairline stroke reports
 // false. StrokeSpec must agree with the paint's stroke fields.
@@ -199,35 +146,5 @@ func TestPaintFillPathStroke(t *testing.T) {
 	var hair path.Path
 	if p.FillPath(&src, &hair, nil, 1) {
 		t.Error("a zero-width (hairline) stroke should report false")
-	}
-}
-
-// TestDrawTextClippedGlyphSkipped covers paintMasks' per-glyph clip rejection: with a clip that excludes part of the
-// text run, the clipped-out glyphs are skipped and only the in-clip ink lands.
-func TestDrawTextClippedGlyphSkipped(t *testing.T) {
-	f := loadTestFont(t, 24)
-	p := solidPaint(0xFF2E64C8, true)
-
-	// Unclipped: both glyphs ink.
-	c1, p1 := newWhiteCanvas()
-	c1.DrawSimpleText([]byte("Ag"), font.TextEncodingUTF8, 4, 28, f, p)
-	full := inkBounds(p1)
-	if full.IsEmpty() {
-		t.Fatal("text draw produced no ink")
-	}
-
-	// Clip to a band left of the second glyph: its mask cannot intersect the clip and is skipped.
-	c2, p2 := newWhiteCanvas()
-	c2.ClipRect(geom.RectLTRB(0, 0, 12, cvH), raster.ClipIntersect, false)
-	c2.DrawSimpleText([]byte("Ag"), font.TextEncodingUTF8, 4, 28, f, p)
-	clipped := inkBounds(p2)
-	if clipped.IsEmpty() {
-		t.Fatal("clipped text draw produced no ink at all")
-	}
-	if clipped.Right > 12 {
-		t.Errorf("ink escaped the clip: bounds %v", clipped)
-	}
-	if clipped.Right >= full.Right {
-		t.Errorf("clip did not reduce the ink extent: clipped %v vs full %v", clipped, full)
 	}
 }

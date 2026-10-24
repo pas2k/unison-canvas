@@ -32,21 +32,6 @@ func TestOneContour(t *testing.T) {
 	}
 }
 
-func TestReversePath(t *testing.T) {
-	// A CW rect reverses to the same closed region with the point order flipped.
-	p := rectPath(0, 0, 10, 10, path.FillWinding)
-	rev := reversePath(p)
-	if rev.ComputeFirstDirection() != path.FirstDirectionCCW {
-		t.Errorf("reversed CW rect direction = %v, want CCW", rev.ComputeFirstDirection())
-	}
-	// The reversal preserves the closed region (area 100 either way).
-	rev.SetFillType(path.FillEvenOdd)
-	checkArea(t, "reversed rect", rev, 100, 0.01)
-	if !rev.Contains(5, 5) || rev.Contains(20, 20) {
-		t.Error("reversed rect membership wrong")
-	}
-}
-
 // TestFixWindingOneContour exercises fixWinding's one-contour fast path: a simplified even-odd single contour becomes
 // winding fill oriented CCW (reversing a CW operand, leaving a CCW one), with the region preserved.
 func TestFixWindingOneContour(t *testing.T) {
@@ -128,53 +113,46 @@ func TestFixWindingMultiContour(t *testing.T) {
 
 // TestResolveOverlappingUnion is the regression that motivates the all-union optimization: two overlapping union
 // operands must reinforce (union), not cancel. A naive even-odd sum of the two simplified operands would leave the
-// overlap empty; Builder.Resolve avoids that by fix-winding each operand before summing.
+// overlap empty; Builder.Resolve avoids that by fix-winding each operand before summing. The allUnion gate does not
+// reverse operands (Simplify normalizes orientation), so the second operand's direction must not matter.
 func TestResolveOverlappingUnion(t *testing.T) {
-	// rect1 = [0,10]x[0,10], rect2 = [5,15]x[5,15]; overlap [5,10]x[5,10]; union area 175.
-	var b Builder
-	b.Add(rectPath(0, 0, 10, 10, path.FillWinding), Union)
-	b.Add(rectPath(5, 5, 15, 15, path.FillWinding), Union)
-	result, ok := b.Resolve()
-	if !ok {
-		t.Fatal("overlapping union resolve failed")
-	}
-	if result.FillType() != path.FillEvenOdd {
-		t.Errorf("fill = %d, want even-odd", result.FillType())
-	}
-	if n := contourCount(result); n != 1 {
-		t.Errorf("contours = %d, want 1", n)
-	}
-	checkArea(t, "overlapping union", result, 175, 0.05)
-	for _, s := range []struct {
-		x, y float32
-		want bool
+	// rect1 = [0,10]x[0,10] (CW), rect2 = [5,15]x[5,15]; overlap [5,10]x[5,10]; union area 175.
+	for _, tc := range []struct {
+		name string
+		dir  geom.PathDirection
 	}{
-		{x: 2, y: 2, want: true},    // rect1 only
-		{x: 12, y: 12, want: true},  // rect2 only
-		{x: 7, y: 7, want: true},    // overlap — must be filled (the reinforcement)
-		{x: 12, y: 2, want: false},  // neither
-		{x: 2, y: 12, want: false},  // neither
-		{x: 20, y: 20, want: false}, // outside
+		{name: "same direction", dir: geom.DirectionCW},
+		{name: "mixed directions", dir: geom.DirectionCCW},
 	} {
-		if got := result.Contains(s.x, s.y); got != s.want {
-			t.Errorf("result.Contains(%v,%v) = %v, want %v (union reinforcement)", s.x, s.y, got, s.want)
+		var b Builder
+		b.Add(rectPath(0, 0, 10, 10, path.FillWinding), Union)
+		b.Add(path.New().AddRect(geom.RectLTRB(5, 5, 15, 15), tc.dir), Union)
+		result, ok := b.Resolve()
+		if !ok {
+			t.Fatalf("%s: overlapping union resolve failed", tc.name)
 		}
-	}
-}
-
-// TestResolveUnionMixedDirections unions overlapping operands of opposite winding directions. The allUnion gate does
-// not reverse operands (Simplify normalizes orientation), so the union region must still be correct.
-func TestResolveUnionMixedDirections(t *testing.T) {
-	var b Builder
-	b.Add(rectPath(0, 0, 10, 10, path.FillWinding), Union) // CW via rectPath
-	cc := path.New().AddRect(geom.RectLTRB(5, 5, 15, 15), geom.DirectionCCW)
-	b.Add(cc, Union)
-	result, ok := b.Resolve()
-	if !ok {
-		t.Fatal("mixed-direction union resolve failed")
-	}
-	checkArea(t, "mixed-direction union", result, 175, 0.05)
-	if !result.Contains(7, 7) {
-		t.Error("mixed-direction union overlap must be filled")
+		if result.FillType() != path.FillEvenOdd {
+			t.Errorf("%s: fill = %d, want even-odd", tc.name, result.FillType())
+		}
+		if n := contourCount(result); n != 1 {
+			t.Errorf("%s: contours = %d, want 1", tc.name, n)
+		}
+		checkArea(t, "overlapping union "+tc.name, result, 175, 0.05)
+		for _, s := range []struct {
+			x, y float32
+			want bool
+		}{
+			{x: 2, y: 2, want: true},    // rect1 only
+			{x: 12, y: 12, want: true},  // rect2 only
+			{x: 7, y: 7, want: true},    // overlap — must be filled (the reinforcement)
+			{x: 12, y: 2, want: false},  // neither
+			{x: 2, y: 12, want: false},  // neither
+			{x: 20, y: 20, want: false}, // outside
+		} {
+			if got := result.Contains(s.x, s.y); got != s.want {
+				t.Errorf("%s: result.Contains(%v,%v) = %v, want %v (union reinforcement)", tc.name, s.x, s.y, got,
+					s.want)
+			}
+		}
 	}
 }

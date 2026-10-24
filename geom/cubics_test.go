@@ -154,34 +154,46 @@ func TestCubicBinarySearchRootsValidT(t *testing.T) {
 	}
 }
 
-func TestChopMonoCubicAtY(t *testing.T) {
-	src := []Point{{X: 0, Y: 0}, {X: 10, Y: 5}, {X: 20, Y: 10}, {X: 30, Y: 15}}
-	var dst [7]Point
-	if !ChopMonoCubicAtY(src, dst[:], 7.5) {
-		t.Fatal("chop failed")
-	}
-	if dst[0] != src[0] || dst[6] != src[3] {
-		t.Error("endpoints not preserved")
-	}
-	if ScalarAbs(dst[3].Y-7.5) > 1e-4 {
-		t.Errorf("chop point Y = %v, want 7.5", dst[3].Y)
-	}
-	// Both halves must remain monotonic in Y.
-	for i := 1; i < 4; i++ {
-		if dst[i].Y < dst[i-1].Y || dst[i+3].Y < dst[i+2].Y {
-			t.Errorf("non-monotonic result: %v", dst)
+func TestChopMonoCubicAt(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		chop func(src, dst []Point, at float32) bool
+		axis func(Point) float32
+		src  []Point
+		at   float32
+	}{
+		{
+			name: "y",
+			chop: ChopMonoCubicAtY,
+			axis: func(p Point) float32 { return p.Y },
+			src:  []Point{{X: 0, Y: 0}, {X: 10, Y: 5}, {X: 20, Y: 10}, {X: 30, Y: 15}},
+			at:   7.5,
+		},
+		{
+			name: "x",
+			chop: ChopMonoCubicAtX,
+			axis: func(p Point) float32 { return p.X },
+			src:  []Point{{X: 0, Y: 0}, {X: 5, Y: 10}, {X: 10, Y: 20}, {X: 15, Y: 30}},
+			at:   3,
+		},
+	} {
+		var dst [7]Point
+		if !c.chop(c.src, dst[:], c.at) {
+			t.Errorf("%s: chop failed", c.name)
+			continue
 		}
-	}
-}
-
-func TestChopMonoCubicAtX(t *testing.T) {
-	src := []Point{{X: 0, Y: 0}, {X: 5, Y: 10}, {X: 10, Y: 20}, {X: 15, Y: 30}}
-	var dst [7]Point
-	if !ChopMonoCubicAtX(src, dst[:], 3) {
-		t.Fatal("chop failed")
-	}
-	if ScalarAbs(dst[3].X-3) > 1e-4 {
-		t.Errorf("chop point X = %v, want 3", dst[3].X)
+		if dst[0] != c.src[0] || dst[6] != c.src[3] {
+			t.Errorf("%s: endpoints not preserved", c.name)
+		}
+		if got := c.axis(dst[3]); ScalarAbs(got-c.at) > 1e-4 {
+			t.Errorf("%s: chop point = %v, want %v", c.name, got, c.at)
+		}
+		// Both halves must remain monotonic along the chop axis.
+		for i := 1; i < 4; i++ {
+			if c.axis(dst[i]) < c.axis(dst[i-1]) || c.axis(dst[i+3]) < c.axis(dst[i+2]) {
+				t.Errorf("%s: non-monotonic result: %v", c.name, dst)
+			}
+		}
 	}
 }
 

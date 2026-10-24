@@ -58,78 +58,63 @@ func TestWrapBytes(t *testing.T) {
 	}
 }
 
-// TestAAFillCircleMaskLane AA-fills a circle sized for the additive-mask lane: the interior must reach full coverage
-// — the mask blitter's BlitRect rows — and the integer-aligned extremes produce the zero-alpha edge columns its BlitV
-// guard skips.
-func TestAAFillCircleMaskLane(t *testing.T) {
-	p := path.New()
-	p.AddCircle(17, 22, 12, geom.DirectionCW)
-	dev := aaFill(t, p, 40, 40)
-
-	if a := alphaAt(dev, 17, 22); a != 255 {
-		t.Errorf("circle center alpha %d, want 255", a)
-	}
-	// A horizontal interior run near the vertical center is fully covered.
-	for x := int32(10); x <= 24; x++ {
-		if a := alphaAt(dev, x, 22); a != 255 {
-			t.Errorf("interior (%d,22) alpha %d, want 255", x, a)
-		}
-	}
-	// Outside the circle stays untouched.
-	if a := alphaAt(dev, 2, 2); a != 0 {
-		t.Errorf("outside alpha %d, want 0", a)
-	}
-	// The AA rim carries partial coverage somewhere along the top arc.
-	partial := false
-	for y := int32(9); y <= 11 && !partial; y++ {
-		for x := int32(12); x <= 22; x++ {
-			if a := alphaAt(dev, x, y); a > 0 && a < 255 {
-				partial = true
-				break
+// TestAAFillMaskLane AA-fills shapes on the additive-mask lane. The interior must reach full coverage (the mask
+// blitter's BlitRect rows), integer-aligned extremes and straight sides produce the zero-alpha edge columns its BlitV
+// guard skips, so the pixels just outside stay untouched, and the AA rim carries partial coverage.
+func TestAAFillMaskLane(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		add      func(p *path.Path)
+		outside  []geom.IRect // must stay untouched
+		interior geom.IRect   // must be fully covered
+		rim      geom.IRect   // must hold some partial coverage
+	}{
+		{
+			// The interior is a horizontal run through the center; the rim is the top arc.
+			name:     "circle",
+			add:      func(p *path.Path) { p.AddCircle(17, 22, 12, geom.DirectionCW) },
+			interior: geom.IRectLTRB(10, 22, 25, 23),
+			outside:  []geom.IRect{geom.IRectLTRB(2, 2, 3, 3)},
+			rim:      geom.IRectLTRB(12, 9, 23, 12),
+		},
+		{
+			// The interior is the rows between the corner radii, edge to edge, and the outside is the column just past
+			// each integer-aligned side; the rim is a rounded corner.
+			name:     "round rect",
+			add:      func(p *path.Path) { p.AddRoundRect(geom.RectLTRB(6, 9, 33, 27), 6, 3, geom.DirectionCW) },
+			interior: geom.IRectLTRB(6, 13, 33, 24),
+			outside:  []geom.IRect{geom.IRectLTRB(5, 13, 6, 24), geom.IRectLTRB(33, 13, 34, 24)},
+			rim:      geom.IRectLTRB(6, 9, 13, 13),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := path.New()
+			c.add(p)
+			dev := aaFill(t, p, 40, 40)
+			for y := c.interior.Top; y < c.interior.Bottom; y++ {
+				for x := c.interior.Left; x < c.interior.Right; x++ {
+					if a := alphaAt(dev, x, y); a != 255 {
+						t.Fatalf("interior (%d,%d) alpha %d, want 255", x, y, a)
+					}
+				}
 			}
-		}
-	}
-	if !partial {
-		t.Error("no partial-coverage AA rim found on the circle's top arc")
-	}
-}
-
-// TestAAFillRoundRectMaskLane AA-fills a round rect with integer-aligned straight sides on the additive-mask lane:
-// the tall vertical sides emit anti-rect spans whose edge columns carry zero partial alpha (the mask blitter's BlitV
-// zero-skip) around a full-coverage interior run (its BlitRect rows).
-func TestAAFillRoundRectMaskLane(t *testing.T) {
-	p := path.New()
-	p.AddRoundRect(geom.RectLTRB(6, 9, 33, 27), 6, 3, geom.DirectionCW)
-	dev := aaFill(t, p, 40, 40)
-
-	// Interior rows between the corner radii are fully covered edge to edge.
-	for y := int32(13); y < 24; y++ {
-		for x := int32(6); x < 33; x++ {
-			if a := alphaAt(dev, x, y); a != 255 {
-				t.Fatalf("interior (%d,%d) alpha %d, want 255", x, y, a)
+			for _, r := range c.outside {
+				for y := r.Top; y < r.Bottom; y++ {
+					for x := r.Left; x < r.Right; x++ {
+						if a := alphaAt(dev, x, y); a != 0 {
+							t.Fatalf("outside (%d,%d) alpha %d, want 0", x, y, a)
+						}
+					}
+				}
 			}
-		}
-	}
-	// The integer-aligned sides leave the columns just outside untouched.
-	for y := int32(13); y < 24; y++ {
-		if a := alphaAt(dev, 5, y); a != 0 {
-			t.Fatalf("left of the shape (5,%d) alpha %d, want 0", y, a)
-		}
-		if a := alphaAt(dev, 33, y); a != 0 {
-			t.Fatalf("right of the shape (33,%d) alpha %d, want 0", y, a)
-		}
-	}
-	// The rounded corners carry partial coverage.
-	partial := false
-	for y := int32(9); y <= 12 && !partial; y++ {
-		for x := int32(6); x <= 12; x++ {
-			if a := alphaAt(dev, x, y); a > 0 && a < 255 {
-				partial = true
-				break
+			for y := c.rim.Top; y < c.rim.Bottom; y++ {
+				for x := c.rim.Left; x < c.rim.Right; x++ {
+					if a := alphaAt(dev, x, y); a > 0 && a < 255 {
+						return
+					}
+				}
 			}
-		}
-	}
-	if !partial {
-		t.Error("no partial-coverage pixels found at the rounded corner")
+			t.Error("no partial-coverage AA rim found")
+		})
 	}
 }

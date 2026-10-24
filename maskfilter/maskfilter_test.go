@@ -115,32 +115,27 @@ func referenceTripleBox(src []uint8, p *planGauss) []uint8 {
 }
 
 func TestGaussScanMatchesReference(t *testing.T) {
-	for _, sigma := range []float64{2.0, 3.7, 8.25} {
-		p := newPlanGauss(sigma)
-		src := []uint8{0, 12, 250, 255, 190, 3, 77, 255, 255, 255, 0, 0, 40}
-		dst := make([]uint8, len(src)+2*p.border)
-		scan := p.makeBlurScan(len(src), make([]uint32, p.bufferSize()))
-		scan.blur(src, dst, 0, 1, len(dst))
-		want := referenceTripleBox(src, &p)
+	wide := []uint8{0, 12, 250, 255, 190, 3, 77, 255, 255, 255, 0, 0, 40}
+	for _, c := range []struct {
+		name  string
+		src   []uint8
+		sigma float64
+	}{
+		{name: "sigma 2", sigma: 2.0, src: wide},
+		{name: "sigma 3.7", sigma: 3.7, src: wide},
+		{name: "sigma 8.25", sigma: 8.25, src: wide},
+		// A mask narrower than the sliding window exercises the noChangeCount lane.
+		{name: "narrower than window", sigma: 6, src: []uint8{255, 128}},
+	} {
+		p := newPlanGauss(c.sigma)
+		dst := make([]uint8, len(c.src)+2*p.border)
+		scan := p.makeBlurScan(len(c.src), make([]uint32, p.bufferSize()))
+		scan.blur(c.src, dst, 0, 1, len(dst))
+		want := referenceTripleBox(c.src, &p)
 		for i := range dst {
 			if dst[i] != want[i] {
-				t.Fatalf("sigma %v: dst[%d] = %d, want %d", sigma, i, dst[i], want[i])
+				t.Fatalf("%s: dst[%d] = %d, want %d", c.name, i, dst[i], want[i])
 			}
-		}
-	}
-}
-
-func TestGaussScanNarrowMask(t *testing.T) {
-	// A mask narrower than the sliding window exercises the noChangeCount lane.
-	p := newPlanGauss(6)
-	src := []uint8{255, 128}
-	dst := make([]uint8, len(src)+2*p.border)
-	scan := p.makeBlurScan(len(src), make([]uint32, p.bufferSize()))
-	scan.blur(src, dst, 0, 1, len(dst))
-	want := referenceTripleBox(src, &p)
-	for i := range dst {
-		if dst[i] != want[i] {
-			t.Fatalf("dst[%d] = %d, want %d", i, dst[i], want[i])
 		}
 	}
 }
@@ -275,6 +270,21 @@ func TestTableFilters(t *testing.T) {
 			t.Errorf("dst[%d] = %d, want %d", i, dst.Image[i], w)
 		}
 	}
+
+	// NewClip is the table filter over MakeClipTable.
+	clipMF := NewClip(64, 192)
+	if clipMF == nil {
+		t.Fatal("clip table mask filter: want non-nil")
+	}
+	MakeClipTable(&clip, 64, 192)
+	if dst, _, ok = clipMF.FilterMask(src, &ident); !ok {
+		t.Fatal("clip FilterMask failed")
+	}
+	for i, v := range src.Image {
+		if got := dst.Image[i/3*int(dst.RowBytes)+i%3]; got != clip[v] {
+			t.Errorf("clip dst[%d] = %d, want %d", i, got, clip[v])
+		}
+	}
 }
 
 func TestBlurRectAnalytic(t *testing.T) {
@@ -310,11 +320,5 @@ func TestBlurRectAnalytic(t *testing.T) {
 	_, ok = blurRect(2, geom.RectLTRB(10, 10, 40, 34), BlurNormal, justComputeBounds, scratch, &dst)
 	if !ok || dst.Image != nil {
 		t.Errorf("bounds-only mode allocated an image")
-	}
-}
-
-func TestShaderMaskFilterNil(t *testing.T) {
-	if NewShader(nil) != nil {
-		t.Error("nil shader accepted")
 	}
 }

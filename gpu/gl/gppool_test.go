@@ -324,10 +324,3 @@ func TestBorrowFillRRectReusesCleanShell(t *testing.T) {
 		t.Fatal("plain fillRRect GP's colorAttrib does not point at its own color attribute slot")
 	}
 }
-
-// TestRecycleGeomProcNilSafe verifies recycleGeomProc tolerates a nil GeometryProcessor. A non-nil ProgramInfo never
-// carries a nil GP, but recycleProgramInfo calls recycleGeomProc unconditionally, so nil-tolerance keeps the contract
-// cheap and total. A nil interface matches no type-switch case.
-func TestRecycleGeomProcNilSafe(_ *testing.T) {
-	recycleGeomProc(nil) // must not panic
-}

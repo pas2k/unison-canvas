@@ -10,6 +10,7 @@
 package pdf
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -47,45 +48,40 @@ func newTestGradient() shaders.Shader {
 const unfoldedPatternMatrix = "1 0 0 -1 0 100"
 
 // TestDrawPaintFoldsCTMIntoShader checks that DrawPaint under a non-identity CTM positions its shader the same way the
-// equivalent full-coverage DrawRect does.
+// equivalent full-coverage DrawRect does, and that the shader-nil path of the fold emits no pattern.
 func TestDrawPaintFoldsCTMIntoShader(t *testing.T) {
-	p := canvas.NewPaint()
-	p.Shader = newTestGradient()
-	data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
-		c.Translate(10, 20)
-		c.DrawPaint(p)
-	})
-	validatePDF(t, data)
-	got := patternMatrices(data)
-	if len(got) != 1 {
-		t.Fatalf("expected exactly one shading pattern, got %d: %v", len(got), got)
-	}
-	// initialTransform [1 0 0 -1 0 100] preConcat translate(10,20): the y-flip turns +20 into 100-20 = 80.
-	if got[0] != "1 0 0 -1 10 80" {
-		t.Errorf("DrawPaint pattern /Matrix = [%s], want [1 0 0 -1 10 80]", got[0])
-	}
+	for _, tc := range []struct {
+		shader shaders.Shader
+		name   string
+		want   []string
+	}{
+		// initialTransform [1 0 0 -1 0 100] preConcat translate(10,20): the y-flip turns +20 into 100-20 = 80.
+		{name: "gradient", shader: newTestGradient(), want: []string{"1 0 0 -1 10 80"}},
+		{name: "no shader", shader: nil, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := canvas.NewPaint()
+			p.Shader = tc.shader
+			data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
+				c.Translate(10, 20)
+				c.DrawPaint(p)
+			})
+			validatePDF(t, data)
+			got := patternMatrices(data)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("DrawPaint pattern /Matrix entries = %v, want %v", got, tc.want)
+			}
 
-	// The same coverage drawn as a rect (whose content entry carries the CTM) must position identically.
-	ref := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
-		c.Translate(10, 20)
-		c.DrawRect(geom.RectLTRB(-10, -20, 90, 80), p)
-	})
-	validatePDF(t, ref)
-	if refMatrices := patternMatrices(ref); len(refMatrices) != 1 || refMatrices[0] != got[0] {
-		t.Errorf("DrawPaint pattern /Matrix = %v, DrawRect equivalent = %v", got, refMatrices)
-	}
-}
-
-// TestDrawPaintWithoutShaderEmitsNoPattern guards the shader-nil path of the DrawPaint fold.
-func TestDrawPaintWithoutShaderEmitsNoPattern(t *testing.T) {
-	p := canvas.NewPaint()
-	data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
-		c.Translate(10, 20)
-		c.DrawPaint(p)
-	})
-	validatePDF(t, data)
-	if m := patternMatrices(data); len(m) != 0 {
-		t.Errorf("a shader-less DrawPaint emitted patterns: %v", m)
+			// The same coverage drawn as a rect (whose content entry carries the CTM) must position identically.
+			ref := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
+				c.Translate(10, 20)
+				c.DrawRect(geom.RectLTRB(-10, -20, 90, 80), p)
+			})
+			validatePDF(t, ref)
+			if refMatrices := patternMatrices(ref); !slices.Equal(refMatrices, got) {
+				t.Errorf("DrawPaint pattern /Matrix = %v, DrawRect equivalent = %v", got, refMatrices)
+			}
+		})
 	}
 }
 
@@ -115,45 +111,37 @@ func TestPerspectivePathFoldsCTMIntoShader(t *testing.T) {
 }
 
 // TestInversePathFoldsCTMIntoShader checks handleInversePath, which computes the positive path in device space and
-// draws it at an identity CTM.
+// draws it at an identity CTM. Its hairline lane instead re-enters internalDrawPath with the real CTM and so must not
+// fold the CTM into the shader a second time.
 func TestInversePathFoldsCTMIntoShader(t *testing.T) {
-	p := canvas.NewPaint()
-	p.Shader = newTestGradient()
-	data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
-		c.Translate(10, 20)
-		inv := (&path.Path{}).AddRect(geom.RectLTRB(0, 0, 30, 30), geom.DirectionCW)
-		inv.SetFillType(path.FillInverseWinding)
-		c.DrawPath(inv, p)
-	})
-	validatePDF(t, data)
-	got := patternMatrices(data)
-	if len(got) != 1 {
-		t.Fatalf("expected exactly one shading pattern, got %d: %v", len(got), got)
-	}
-	if got[0] != "1 0 0 -1 10 80" {
-		t.Errorf("inverse path pattern /Matrix = [%s], want [1 0 0 -1 10 80]", got[0])
-	}
-}
-
-// TestInversePathHairlineStrokeKeepsCTM covers handleInversePath's hairline lane, which re-enters internalDrawPath with
-// the real CTM and so must not fold the CTM into the shader a second time.
-func TestInversePathHairlineStrokeKeepsCTM(t *testing.T) {
-	p := canvas.NewPaint()
-	p.Shader = newTestGradient()
-	p.Style = canvas.StyleStroke
-	p.StrokeWidth = 0
-	data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
-		c.Translate(10, 20)
-		inv := (&path.Path{}).AddRect(geom.RectLTRB(0, 0, 30, 30), geom.DirectionCW)
-		inv.SetFillType(path.FillInverseWinding)
-		c.DrawPath(inv, p)
-	})
-	validatePDF(t, data)
-	got := patternMatrices(data)
-	if len(got) != 1 {
-		t.Fatalf("expected exactly one shading pattern, got %d: %v", len(got), got)
-	}
-	if got[0] != "1 0 0 -1 10 80" {
-		t.Errorf("hairline inverse path pattern /Matrix = [%s], want [1 0 0 -1 10 80]", got[0])
+	for _, tc := range []struct {
+		name     string
+		hairline bool
+	}{
+		{name: "fill", hairline: false},
+		{name: "hairline stroke", hairline: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := canvas.NewPaint()
+			p.Shader = newTestGradient()
+			if tc.hairline {
+				p.Style = canvas.StyleStroke
+				p.StrokeWidth = 0
+			}
+			data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
+				c.Translate(10, 20)
+				inv := (&path.Path{}).AddRect(geom.RectLTRB(0, 0, 30, 30), geom.DirectionCW)
+				inv.SetFillType(path.FillInverseWinding)
+				c.DrawPath(inv, p)
+			})
+			validatePDF(t, data)
+			got := patternMatrices(data)
+			if len(got) != 1 {
+				t.Fatalf("expected exactly one shading pattern, got %d: %v", len(got), got)
+			}
+			if got[0] != "1 0 0 -1 10 80" {
+				t.Errorf("%s inverse path pattern /Matrix = [%s], want [1 0 0 -1 10 80]", tc.name, got[0])
+			}
+		})
 	}
 }

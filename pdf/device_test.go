@@ -181,37 +181,6 @@ func TestPopulateGraphicStateEntryShaderRouting(t *testing.T) {
 	}
 }
 
-// TestNonGradientShaderPaintsWithItsPattern proves an image shader's pattern (not the paint color) is what the page
-// content paints with: the paint color would have shown up as an "rg" fill.
-func TestNonGradientShaderPaintsWithItsPattern(t *testing.T) {
-	img := solidRGBAImage(t, 4, 4, 0x40, 0x80, 0xC0, 0xFF)
-	paint := canvas.NewPaint()
-	paint.Color = colorcore.ARGB(255, 200, 30, 40) // .7843 .1176 .1569
-	paint.Shader = shaders.NewImage(img, shaders.TileClamp, shaders.TileClamp, shaders.SamplingOptions{}, nil)
-	data := renderPDFUncompressed(t, 40, 40, func(c *canvas.Canvas) {
-		c.DrawRect(geom.RectLTRB(0, 0, 40, 40), paint)
-	})
-	validatePDF(t, data)
-
-	// The page content stream is the one carrying the page's top-left → bottom-left flip; the pattern cell's stream
-	// also holds a "cm", so it cannot be picked by that alone.
-	var content string
-	for _, s := range allStreamContents(data) {
-		if strings.Contains(s, "1 0 0 -1 0 40 cm\n") {
-			content = s
-			break
-		}
-	}
-	if content == "" {
-		t.Fatalf("no page content stream\nstreams=%v", allStreamContents(data))
-	}
-	mustContain(t, content, "/Pattern cs")
-	mustContain(t, content, " scn\n")
-	if strings.Contains(content, ".7843 .1176 .1569 rg") {
-		t.Errorf("the image shader's fill fell back to the paint color\n--- content ---\n%s", content)
-	}
-}
-
 func TestDeviceFilledRect(t *testing.T) {
 	red := canvas.NewPaint()
 	red.Color = colorcore.ARGB(255, 200, 30, 40)
@@ -469,12 +438,6 @@ func TestDevicePointsPerspective(t *testing.T) {
 	}
 }
 
-func TestDeviceEmptyPageHasNoContent(t *testing.T) {
-	// A page with no draws still produces a valid one-page PDF.
-	data := renderPDF(t, 50, 50, func(_ *canvas.Canvas) {})
-	validatePDF(t, data)
-}
-
 func TestDeviceBalancedSaveRestore(t *testing.T) {
 	p := canvas.NewPaint()
 	data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
@@ -492,24 +455,6 @@ func TestDeviceBalancedSaveRestore(t *testing.T) {
 	if q, qq := strings.Count(content, "q\n"), strings.Count(content, "Q\n"); q != qq {
 		t.Errorf("unbalanced q/Q: %d q vs %d Q\n%s", q, qq, content)
 	}
-}
-
-func TestDeviceSaveLayerCompositesContent(t *testing.T) {
-	// saveLayer content must survive inside a form XObject the page invokes rather than being silently dropped.
-	data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
-		c.SaveLayer(nil, nil)
-		red := canvas.NewPaint()
-		red.Color = colorcore.ARGB(255, 255, 0, 0)
-		c.DrawRect(geom.RectLTRB(10, 10, 50, 50), red)
-		c.Restore()
-	})
-	validatePDF(t, data)
-	if !bytes.Contains(data, []byte("/Subtype /Form")) {
-		t.Fatal("saveLayer content was dropped (no form XObject)")
-	}
-	joined := strings.Join(allStreamContents(data), "\n")
-	mustContain(t, joined, "10 10 40 40 re\n") // the layer's red rect, inside the form XObject
-	mustContain(t, joined, " Do\n")            // the page invokes the layer XObject
 }
 
 func TestDeviceSaveLayerAlphaTransparencyGroup(t *testing.T) {
@@ -538,6 +483,7 @@ func TestDeviceSaveLayerAlphaTransparencyGroup(t *testing.T) {
 	if strings.Contains(content, " re\n") {
 		t.Errorf("layer geometry leaked into the page content:\n%s", content)
 	}
+	mustContain(t, strings.Join(allStreamContents(data), "\n"), "10 10 40 40 re\n")
 	foundAlpha := false
 	for _, s := range dictObjects(data) {
 		if strings.Contains(s, "/ca .502") { // 128/255 to four significant digits

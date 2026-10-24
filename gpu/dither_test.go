@@ -60,27 +60,18 @@ func TestDitherRangeForColorType(t *testing.T) {
 			t.Errorf("DitherRangeForColorType(%v) = %v, want %v", c.ct, got, c.want)
 		}
 	}
-}
-
-// TestDitherRangeCoversRenderableUnormTypes pins that no unorm color type of 16 bits per channel or less silently
-// falls through to the no-dithering default: such a type would pass the shouldDitherPaint gate and then get a dither
-// effect with a zero range, i.e. a no-op fragment processor.
-func TestDitherRangeCoversRenderableUnormTypes(t *testing.T) {
-	float16Or32 := map[ColorType]bool{
+	// Exhaustiveness: every other unorm type of 16 bits per channel or less, including one added after this table,
+	// must have a nonzero range too.
+	noDither := map[ColorType]bool{
 		ColorTypeAlphaF16: true, ColorTypeRGBAF16: true, ColorTypeRGBF16F16F16x: true,
 		ColorTypeRGBAF16Clamped: true, ColorTypeRGBAF32: true, ColorTypeRGF16: true,
 		ColorTypeRF16: true, ColorTypeGrayF16: true,
-	}
-	// The xxx types are data-only reinterpretations that never back a draw target.
-	dataOnly := map[ColorType]bool{
+		// The xxx types are data-only reinterpretations that never back a draw target.
 		ColorTypeAlpha8xxx: true, ColorTypeAlphaF32xxx: true, ColorTypeGray8xxx: true,
 		ColorTypeR8xxx: true,
 	}
 	for ct := ColorTypeAlpha8; int(ct) < ColorTypeCount; ct++ {
-		if float16Or32[ct] || dataOnly[ct] {
-			continue
-		}
-		if DitherRangeForColorType(ct) == 0 {
+		if !noDither[ct] && DitherRangeForColorType(ct) == 0 {
 			t.Errorf("color type %v has no dither range", ct)
 		}
 	}

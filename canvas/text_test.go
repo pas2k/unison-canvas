@@ -96,6 +96,7 @@ func TestDrawSimpleTextEmptyAndInvalid(t *testing.T) {
 	c.DrawSimpleText(nil, font.TextEncodingUTF8, 5, 20, f, paint)
 	c.DrawSimpleText([]byte{0xff}, font.TextEncodingUTF8, 5, 20, f, paint)
 	c.DrawSimpleText([]byte("x"), font.TextEncodingUTF8, 5, 20, nil, paint)
+	c.DrawTextBlob(nil, 0, 0, paint)
 	if !inkBounds(pix).IsEmpty() {
 		t.Error("nothing should have drawn")
 	}
@@ -124,6 +125,30 @@ func TestDrawSimpleTextRespectsClipAndCTM(t *testing.T) {
 	}
 	if ink.Top >= 40 || ink.Top < 28 {
 		t.Errorf("unexpected ink top: %v", ink)
+	}
+
+	// Clip to a band left of the second glyph of "Ag": its mask cannot intersect the clip and is skipped, so only the
+	// in-clip ink lands.
+	f24 := loadTestFont(t, 24)
+	blue := solidPaint(0xFF2E64C8, true)
+	c1, p1 := newWhiteCanvas()
+	c1.DrawSimpleText([]byte("Ag"), font.TextEncodingUTF8, 4, 28, f24, blue)
+	full := inkBounds(p1)
+	if full.IsEmpty() {
+		t.Fatal("unclipped \"Ag\" produced no ink")
+	}
+	c2, p2 := newWhiteCanvas()
+	c2.ClipRect(geom.RectLTRB(0, 0, 12, cvH), raster.ClipIntersect, false)
+	c2.DrawSimpleText([]byte("Ag"), font.TextEncodingUTF8, 4, 28, f24, blue)
+	clipped := inkBounds(p2)
+	if clipped.IsEmpty() {
+		t.Fatal("clipped \"Ag\" produced no ink at all")
+	}
+	if clipped.Right > 12 {
+		t.Errorf("\"Ag\" ink escaped the clip: bounds %v", clipped)
+	}
+	if clipped.Right >= full.Right {
+		t.Errorf("clip did not reduce the ink extent: clipped %v vs full %v", clipped, full)
 	}
 }
 
@@ -207,14 +232,6 @@ func TestDrawTextBlobMultiRun(t *testing.T) {
 	// Two rows of text: ink spans both the first baseline (16) region and the second (38).
 	if ink.Top >= 16 || ink.Bottom <= 30 {
 		t.Errorf("expected two text rows, ink %v", ink)
-	}
-}
-
-func TestDrawTextBlobNil(t *testing.T) {
-	c, pix := newTextCanvas(40, 40)
-	c.DrawTextBlob(nil, 0, 0, NewPaint())
-	if !inkBounds(pix).IsEmpty() {
-		t.Error("nil blob must draw nothing")
 	}
 }
 

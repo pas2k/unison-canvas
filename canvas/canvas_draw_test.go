@@ -98,49 +98,44 @@ func TestDrawOvalMatchesPath(t *testing.T) {
 	pixmapsEqual(t, pixA, pixB, "drawOval vs oval path")
 }
 
-// TestDrawArcMatchesCreateDrawArcPath verifies the drawArc lowering.
+// TestDrawArcMatchesCreateDrawArcPath verifies the drawArc lowering. A fill-style paint carrying a path effect must not
+// take the convert-to-oval shortcut: the effect must see the same arc geometry the PDF and GPU devices feed it, not an
+// AddOval replacement.
 func TestDrawArcMatchesCreateDrawArcPath(t *testing.T) {
 	oval := geom.RectLTRB(10, 10, 70, 60)
-	for _, useCenter := range []bool{false, true} {
-		viaArc, pixA := newWhiteCanvasWH(90, 80)
-		viaPath, pixB := newWhiteCanvasWH(90, 80)
+	for _, tc := range []struct {
+		name   string
+		sweep  float32
+		dashed bool
+	}{
+		{name: "partial sweep fill", sweep: 200},
+		{name: "dashed full sweep", sweep: 360, dashed: true},
+	} {
+		for _, useCenter := range []bool{false, true} {
+			paint := NewPaint()
+			paint.Color = colorcore.Color(0xFF157015)
+			paint.AntiAlias = true
+			if tc.dashed {
+				paint.PathEffect = patheffect.MakeDash([]float32{9, 5}, 0)
+			}
 
-		paint := NewPaint()
-		paint.Color = colorcore.Color(0xFF157015)
-		paint.AntiAlias = true
+			viaArc, pixA := newWhiteCanvasWH(90, 80)
+			viaArc.DrawArc(oval, 30, tc.sweep, useCenter, paint)
 
-		viaArc.DrawArc(oval, 30, 200, useCenter, paint)
-		p := path.CreateDrawArcPath(oval, 30, 200, useCenter, true)
-		viaPath.DrawPath(p, paint)
+			viaPath, pixB := newWhiteCanvasWH(90, 80)
+			viaPath.DrawPath(path.CreateDrawArcPath(oval, 30, tc.sweep, useCenter, !tc.dashed), paint)
 
-		pixmapsEqual(t, pixA, pixB, "drawArc vs CreateDrawArcPath")
-	}
-}
+			pixmapsEqual(t, pixA, pixB, tc.name+": drawArc vs CreateDrawArcPath")
 
-// TestDrawArcFullSweepWithPathEffect verifies a fill-style paint carrying a path effect does not take the
-// convert-to-oval shortcut in the arc lowering: the effect must see the same arc geometry the PDF and GPU devices feed
-// it, not an AddOval replacement.
-func TestDrawArcFullSweepWithPathEffect(t *testing.T) {
-	oval := geom.RectLTRB(10, 10, 70, 60)
-	for _, useCenter := range []bool{false, true} {
-		paint := NewPaint()
-		paint.Color = colorcore.Color(0xFF157015)
-		paint.AntiAlias = true
-		paint.PathEffect = patheffect.MakeDash([]float32{9, 5}, 0)
-
-		viaArc, pixA := newWhiteCanvasWH(90, 80)
-		viaArc.DrawArc(oval, 30, 360, useCenter, paint)
-
-		viaPath, pixB := newWhiteCanvasWH(90, 80)
-		viaPath.DrawPath(path.CreateDrawArcPath(oval, 30, 360, useCenter, false), paint)
-
-		pixmapsEqual(t, pixA, pixB, "dashed full-sweep drawArc vs CreateDrawArcPath")
-
-		// Guard against the comparison being vacuous: the oval shortcut really does produce different pixels here.
-		viaOval, pixC := newWhiteCanvasWH(90, 80)
-		viaOval.DrawPath(path.CreateDrawArcPath(oval, 30, 360, useCenter, true), paint)
-		if equalPixmaps(pixB, pixC) {
-			t.Fatalf("useCenter=%v: oval shortcut is indistinguishable, test proves nothing", useCenter)
+			if tc.dashed {
+				// Guard against the comparison being vacuous: the oval shortcut really does produce different pixels.
+				viaOval, pixC := newWhiteCanvasWH(90, 80)
+				viaOval.DrawPath(path.CreateDrawArcPath(oval, 30, tc.sweep, useCenter, true), paint)
+				if equalPixmaps(pixB, pixC) {
+					t.Fatalf("%s, useCenter=%v: oval shortcut is indistinguishable, test proves nothing", tc.name,
+						useCenter)
+				}
+			}
 		}
 	}
 }
@@ -185,62 +180,92 @@ func TestDrawRectStrokeFrame(t *testing.T) {
 	}
 }
 
-// TestDrawThickStroke verifies non-hairline strokes draw through the stroker: pixels on the line's spine are covered,
-// pixels far from the band stay white.
+// TestDrawThickStroke verifies non-hairline strokes draw through the stroker: pixels on the stroke band are covered,
+// pixels off it stay white.
 func TestDrawThickStroke(t *testing.T) {
-	c, pix := newWhiteCanvasWH(40, 30)
-	paint := NewPaint()
-	paint.Style = StyleStroke
-	paint.StrokeWidth = 5
-	paint.Color = colorcore.Color(0xFF000000)
-	p := &path.Path{}
-	p.MoveTo(5, 5)
-	p.LineTo(35, 25)
-	c.DrawPath(p, paint)
-	// the segment midpoint (20, 15) sits on the stroke's spine
-	if at(pix, 20, 15) == 0xFFFFFFFF {
-		t.Fatal("stroke spine pixel not drawn")
-	}
-	// the far corner is well outside the 2.5px band
-	if at(pix, 37, 2) != 0xFFFFFFFF {
-		t.Fatal("pixel far from the stroke band was drawn")
+	for _, tc := range []struct {
+		path  *path.Path
+		name  string
+		inked []geom.IPoint
+		blank []geom.IPoint
+		w, h  int32
+		width float32
+		aa    bool
+	}{
+		{
+			// The segment midpoint (20,15) sits on the stroke's spine; the far corner is well outside the 2.5px band.
+			name:  "line",
+			w:     40,
+			h:     30,
+			path:  path.New().MoveTo(5, 5).LineTo(35, 25),
+			width: 5,
+			inked: []geom.IPoint{{X: 20, Y: 15}},
+			blank: []geom.IPoint{{X: 37, Y: 2}},
+		},
+		{
+			// The stroker converts a stroked circle to a filled annulus: (80,50) is on the radius; the center is in the
+			// hole and the far corner is outside the ring.
+			name:  "AA circle ring",
+			w:     cvW,
+			h:     cvH,
+			path:  path.New().AddCircle(50, 50, 30, geom.DirectionCW),
+			aa:    true,
+			width: 4,
+			inked: []geom.IPoint{{X: 80, Y: 50}},
+			blank: []geom.IPoint{{X: 50, Y: 50}, {X: 5, Y: 5}},
+		},
+	} {
+		c, pix := newWhiteCanvasWH(tc.w, tc.h)
+		paint := solidPaint(0xFF000000, tc.aa)
+		paint.Style = StyleStroke
+		paint.StrokeWidth = tc.width
+		c.DrawPath(tc.path, paint)
+		for _, pt := range tc.inked {
+			if at(pix, pt.X, pt.Y) == 0xFFFFFFFF {
+				t.Errorf("%s: stroke pixel (%d,%d) not drawn", tc.name, pt.X, pt.Y)
+			}
+		}
+		for _, pt := range tc.blank {
+			if at(pix, pt.X, pt.Y) != 0xFFFFFFFF {
+				t.Errorf("%s: pixel (%d,%d) off the stroke band was drawn", tc.name, pt.X, pt.Y)
+			}
+		}
 	}
 }
 
-// TestDrawPathHairlineStroke verifies zero-width strokes draw as hairlines.
-func TestDrawPathHairlineStroke(t *testing.T) {
-	c, pix := newWhiteCanvasWH(40, 30)
-	paint := NewPaint()
-	paint.Style = StyleStroke
-	paint.Color = colorcore.Color(0xFF000000)
-	p := &path.Path{}
-	p.MoveTo(5, 15)
-	p.LineTo(35, 15)
-	c.DrawPath(p, paint)
-	if at(pix, 20, 15) != 0xFF000000 {
-		t.Fatalf("hairline stroke did not draw")
-	}
-}
-
-// TestDrawThinAAStrokePromotedToHairline verifies the AA thin-stroke promotion modulates alpha.
+// TestDrawThinAAStrokePromotedToHairline verifies zero-width strokes draw as hairlines and the AA thin-stroke promotion
+// modulates alpha.
 func TestDrawThinAAStrokePromotedToHairline(t *testing.T) {
-	c, pix := newWhiteCanvasWH(40, 30)
-	paint := NewPaint()
-	paint.Style = StyleStroke
-	paint.StrokeWidth = 0.5
-	paint.AntiAlias = true
-	paint.Color = colorcore.Color(0xFF000000)
-	p := &path.Path{}
-	p.MoveTo(5, 15.5)
-	p.LineTo(35, 15.5)
-	c.DrawPath(p, paint)
+	for _, tc := range []struct {
+		name    string
+		width   float32
+		aa      bool
+		y       float32
+		partial bool // coverage must be modulated: neither white nor full black
+	}{
+		{name: "zero-width hairline", y: 15},
+		{name: "thin AA stroke", width: 0.5, aa: true, y: 15.5, partial: true},
+	} {
+		c, pix := newWhiteCanvasWH(40, 30)
+		paint := NewPaint()
+		paint.Style = StyleStroke
+		paint.StrokeWidth = tc.width
+		paint.AntiAlias = tc.aa
+		paint.Color = colorcore.Color(0xFF000000)
+		p := &path.Path{}
+		p.MoveTo(5, tc.y)
+		p.LineTo(35, tc.y)
+		c.DrawPath(p, paint)
 
-	v := at(pix, 20, 15)
-	if v == 0xFFFFFFFF {
-		t.Fatalf("thin AA stroke drew nothing")
-	}
-	if v == 0xFF000000 {
-		t.Fatalf("thin AA stroke drew at full alpha (no coverage modulation)")
+		v := at(pix, 20, 15)
+		switch {
+		case !tc.partial && v != 0xFF000000:
+			t.Errorf("%s: drew %08x, want exact black", tc.name, v)
+		case tc.partial && v == 0xFFFFFFFF:
+			t.Errorf("%s: drew nothing", tc.name)
+		case tc.partial && v == 0xFF000000:
+			t.Errorf("%s: drew at full alpha (no coverage modulation)", tc.name)
+		}
 	}
 }
 
@@ -403,24 +428,6 @@ func TestSaveLayerAlphaUniformOverlap(t *testing.T) {
 	}
 }
 
-// TestSaveLayerFullAlphaMatchesDirect verifies an alpha-255 layer is invisible in the output.
-func TestSaveLayerFullAlphaMatchesDirect(t *testing.T) {
-	layered, pixA := newWhiteCanvasWH(60, 40)
-	direct, pixB := newWhiteCanvasWH(60, 40)
-
-	paint := NewPaint()
-	paint.Color = colorcore.Color(0x99336699)
-	paint.AntiAlias = true
-
-	layered.SaveLayerAlpha(nil, 255)
-	layered.DrawRect(geom.RectLTRB(5.5, 5.25, 35.75, 25.5), paint)
-	layered.Restore()
-
-	direct.DrawRect(geom.RectLTRB(5.5, 5.25, 35.75, 25.5), paint)
-
-	pixmapsEqual(t, pixA, pixB, "alpha-255 layer vs direct")
-}
-
 // TestSaveLayerBoundsClipContent verifies the layer bounds hint hard-clips layer content.
 func TestSaveLayerBoundsClipContent(t *testing.T) {
 	c, pix := newWhiteCanvasWH(60, 40)
@@ -440,33 +447,62 @@ func TestSaveLayerBoundsClipContent(t *testing.T) {
 	}
 }
 
-// TestSaveLayerMatrixAndClipInsideLayer verifies the CTM continues into the layer and clips set after saveLayer
-// restrict layer content; the pre-layer clip applies at restore.
+// TestSaveLayerMatrixAndClipInsideLayer verifies an alpha-255 layer is invisible in the output: the CTM continues into
+// the layer, clips set after saveLayer restrict layer content, and the pre-layer clip applies at restore.
 func TestSaveLayerMatrixAndClipInsideLayer(t *testing.T) {
-	layered, pixA := newWhiteCanvasWH(80, 60)
-	direct, pixB := newWhiteCanvasWH(80, 60)
+	for _, tc := range []struct {
+		preLayer  func(c *Canvas) // CTM and clip set before saveLayer
+		name      string
+		innerClip geom.Rect // clip set after saveLayer; empty for none
+		rect      geom.Rect
+		w, h      int32
+		color     colorcore.Color
+		aa        bool
+	}{
+		{
+			name:  "inner clip under a pre-layer clip and CTM",
+			w:     80,
+			h:     60,
+			color: 0xFF993311,
+			preLayer: func(c *Canvas) {
+				c.ClipRect(geom.RectLTRB(0, 0, 50, 60), raster.ClipIntersect, false)
+				c.Translate(10, 5)
+			},
+			innerClip: geom.RectLTRB(5, 5, 40, 40),
+			rect:      geom.RectLTRB(0, 0, 60, 50),
+		},
+		{
+			name:  "translucent AA content",
+			w:     60,
+			h:     40,
+			color: 0x99336699,
+			aa:    true,
+			rect:  geom.RectLTRB(5.5, 5.25, 35.75, 25.5),
+		},
+	} {
+		layered, pixA := newWhiteCanvasWH(tc.w, tc.h)
+		direct, pixB := newWhiteCanvasWH(tc.w, tc.h)
 
-	paint := NewPaint()
-	paint.Color = colorcore.Color(0xFF993311)
+		paint := NewPaint()
+		paint.Color = tc.color
+		paint.AntiAlias = tc.aa
 
-	// pre-layer clip
-	layered.ClipRect(geom.RectLTRB(0, 0, 50, 60), raster.ClipIntersect, false)
-	direct.ClipRect(geom.RectLTRB(0, 0, 50, 60), raster.ClipIntersect, false)
+		if tc.preLayer != nil {
+			tc.preLayer(layered)
+			tc.preLayer(direct)
+		}
+		layered.SaveLayerAlpha(nil, 255)
+		direct.Save()
+		for _, c := range []*Canvas{layered, direct} {
+			if !tc.innerClip.IsEmpty() {
+				c.ClipRect(tc.innerClip, raster.ClipIntersect, false)
+			}
+			c.DrawRect(tc.rect, paint)
+			c.Restore()
+		}
 
-	layered.Translate(10, 5)
-	direct.Translate(10, 5)
-
-	layered.SaveLayerAlpha(nil, 255)
-	layered.ClipRect(geom.RectLTRB(5, 5, 40, 40), raster.ClipIntersect, false)
-	layered.DrawRect(geom.RectLTRB(0, 0, 60, 50), paint)
-	layered.Restore()
-
-	direct.Save()
-	direct.ClipRect(geom.RectLTRB(5, 5, 40, 40), raster.ClipIntersect, false)
-	direct.DrawRect(geom.RectLTRB(0, 0, 60, 50), paint)
-	direct.Restore()
-
-	pixmapsEqual(t, pixA, pixB, "layer with inner clip vs direct")
+		pixmapsEqual(t, pixA, pixB, tc.name+": alpha-255 layer vs direct")
+	}
 }
 
 // TestSaveLayerNothingToDrawPaint verifies a nothing-to-draw layer paint degenerates to save + empty clip: nothing

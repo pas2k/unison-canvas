@@ -16,7 +16,8 @@ import (
 )
 
 // FindQuadMaxCurvature: for a symmetric quad the max curvature is at t=0.5; for degenerate control placement it pins to
-// the [0,1] ends.
+// the [0,1] ends. Documented contract: the result is in [0, 1] for finite input and NaN for a NaN coordinate, matching
+// Skia.
 func TestFindQuadMaxCurvature(t *testing.T) {
 	sym := []Point{{X: 0, Y: 0}, {X: 50, Y: 100}, {X: 100, Y: 0}}
 	if got := FindQuadMaxCurvature(sym); got != 0.5 {
@@ -26,6 +27,27 @@ func TestFindQuadMaxCurvature(t *testing.T) {
 	deg := []Point{{X: 0, Y: 0}, {X: 0, Y: 0}, {X: 100, Y: 100}}
 	if got := FindQuadMaxCurvature(deg); got != 0 {
 		t.Fatalf("degenerate quad max curvature %v want 0", got)
+	}
+	nan := float32(math.NaN())
+	for _, src := range [][]Point{
+		{{X: nan, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: 0}},
+		{{X: 0, Y: 0}, {X: nan, Y: 1}, {X: 2, Y: 0}},
+		{{X: 0, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: nan}},
+	} {
+		if got := FindQuadMaxCurvature(src); !math.IsNaN(float64(got)) {
+			t.Errorf("FindQuadMaxCurvature(%v) = %v, want NaN", src, got)
+		}
+	}
+	rng := rand.New(rand.NewSource(5))
+	for range 50000 {
+		src := []Point{
+			{X: rng.Float32()*200 - 100, Y: rng.Float32()*200 - 100},
+			{X: rng.Float32()*200 - 100, Y: rng.Float32()*200 - 100},
+			{X: rng.Float32()*200 - 100, Y: rng.Float32()*200 - 100},
+		}
+		if got := FindQuadMaxCurvature(src); got < 0 || got > 1 {
+			t.Fatalf("FindQuadMaxCurvature(%v) = %v, want within [0, 1]", src, got)
+		}
 	}
 }
 
@@ -136,31 +158,6 @@ func TestChopCubicAtInflections(t *testing.T) {
 	for i := range 4 {
 		if dst[i] != bulge[i] {
 			t.Fatalf("bulge cubic not copied through: %v", dst[:4])
-		}
-	}
-}
-
-func TestFindQuadMaxCurvatureNaN(t *testing.T) {
-	// Documented contract: the result is in [0, 1] for finite input and NaN for a NaN coordinate, matching Skia.
-	nan := float32(math.NaN())
-	for _, src := range [][]Point{
-		{{X: nan, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: 0}},
-		{{X: 0, Y: 0}, {X: nan, Y: 1}, {X: 2, Y: 0}},
-		{{X: 0, Y: 0}, {X: 1, Y: 1}, {X: 2, Y: nan}},
-	} {
-		if got := FindQuadMaxCurvature(src); !math.IsNaN(float64(got)) {
-			t.Errorf("FindQuadMaxCurvature(%v) = %v, want NaN", src, got)
-		}
-	}
-	rng := rand.New(rand.NewSource(5))
-	for range 50000 {
-		src := []Point{
-			{X: rng.Float32()*200 - 100, Y: rng.Float32()*200 - 100},
-			{X: rng.Float32()*200 - 100, Y: rng.Float32()*200 - 100},
-			{X: rng.Float32()*200 - 100, Y: rng.Float32()*200 - 100},
-		}
-		if got := FindQuadMaxCurvature(src); got < 0 || got > 1 {
-			t.Fatalf("FindQuadMaxCurvature(%v) = %v, want within [0, 1]", src, got)
 		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/richardwilkes/canvas/colorfilter"
 	"github.com/richardwilkes/canvas/geom"
 	"github.com/richardwilkes/canvas/imagecore"
+	"github.com/richardwilkes/canvas/maskfilter"
 	"github.com/richardwilkes/canvas/raster"
 	"github.com/richardwilkes/canvas/shaders"
 )
@@ -32,76 +33,82 @@ func gradientImage(w, h int32) *imagecore.Image {
 }
 
 func TestDrawImageIntegerOffsetIsSprite(t *testing.T) {
-	img := gradientImage(3, 3)
-	pix := raster.NewPixmap(8, 8)
-	c := NewForPixmap(pix)
-	c.DrawImage(img, 2, 3, shaders.SamplingOptions{}, nil)
+	for _, alpha := range []uint32{0xFF, 0x80} {
+		img := gradientImage(3, 3)
+		pix := raster.NewPixmap(8, 8)
+		c := NewForPixmap(pix)
+		var paint *Paint
+		if alpha != 0xFF {
+			paint = NewPaint()
+			paint.Color = paint.Color.WithAlpha(uint8(alpha))
+		}
+		c.DrawImage(img, 2, 3, shaders.SamplingOptions{}, paint)
 
-	src := img.PeekPixels(imagecore.CachingAllow)
-	for y := int32(0); y < 3; y++ {
-		for x := int32(0); x < 3; x++ {
-			want := src.Words[y*src.RowElems+x]
-			got := pix.Pix[(y+3)*8+(x+2)]
-			if got != want {
-				t.Fatalf("(%d,%d) = %08x want %08x", x, y, got, want)
+		// The sprite lane blends with a premul lerp of scale alpha+1 (src over dst=0): channel*(alpha+1)>>8.
+		src := img.PeekPixels(imagecore.CachingAllow)
+		for y := int32(0); y < 3; y++ {
+			for x := int32(0); x < 3; x++ {
+				s := src.Words[y*src.RowElems+x]
+				var want uint32
+				for shift := 0; shift < 32; shift += 8 {
+					want |= (s >> shift & 0xFF * (alpha + 1) >> 8) << shift
+				}
+				got := pix.Pix[(y+3)*8+(x+2)]
+				if got != want {
+					t.Fatalf("alpha %#x: (%d,%d) = %08x want %08x", alpha, x, y, got, want)
+				}
 			}
 		}
-	}
-	if pix.Pix[0] != 0 || pix.Pix[8*7+7] != 0 {
-		t.Fatal("pixels outside the image were written")
+		if pix.Pix[0] != 0 || pix.Pix[8*7+7] != 0 {
+			t.Fatalf("alpha %#x: pixels outside the image were written", alpha)
+		}
 	}
 }
 
 func TestDrawImageRectScales(t *testing.T) {
-	img := gradientImage(2, 2)
-	pix := raster.NewPixmap(8, 8)
-	c := NewForPixmap(pix)
-	c.DrawImageRect(img, geom.RectWH(2, 2), geom.RectWH(8, 8),
-		shaders.SamplingOptions{}, nil, ConstraintFast)
+	type probe struct{ dx, dy, sx, sy int32 }
+	for _, tc := range []struct {
+		name       string
+		probes     []probe
+		src        geom.Rect
+		dst        geom.Rect
+		imgSize    int32
+		pixSize    int32
+		constraint SrcRectConstraint
+	}{
+		{
+			// Nearest upscale 4x: destination pixel (1,1) shows source pixel (0,0), etc.
+			name:       "nearest 4x upscale",
+			imgSize:    2,
+			pixSize:    8,
+			src:        geom.RectWH(2, 2),
+			dst:        geom.RectWH(8, 8),
+			constraint: ConstraintFast,
+			probes:     []probe{{1, 1, 0, 0}, {6, 1, 1, 0}, {6, 6, 1, 1}},
+		},
+		{
+			// Only the bottom-right 2x2 of the source fills the destination.
+			name:       "strict source subset",
+			imgSize:    4,
+			pixSize:    4,
+			src:        geom.RectLTRB(2, 2, 4, 4),
+			dst:        geom.RectWH(4, 4),
+			constraint: ConstraintStrict,
+			probes:     []probe{{0, 0, 2, 2}, {3, 3, 3, 3}},
+		},
+	} {
+		img := gradientImage(tc.imgSize, tc.imgSize)
+		pix := raster.NewPixmap(tc.pixSize, tc.pixSize)
+		c := NewForPixmap(pix)
+		c.DrawImageRect(img, tc.src, tc.dst, shaders.SamplingOptions{}, nil, tc.constraint)
 
-	src := img.PeekPixels(imagecore.CachingAllow)
-	// Nearest upscale 4x: destination pixel (1,1) shows source pixel (0,0), etc.
-	if pix.Pix[1*8+1] != src.Words[0] {
-		t.Fatalf("q00 = %08x want %08x", pix.Pix[9], src.Words[0])
-	}
-	if pix.Pix[1*8+6] != src.Words[1] {
-		t.Fatalf("q10 = %08x want %08x", pix.Pix[14], src.Words[1])
-	}
-	if pix.Pix[6*8+6] != src.Words[3] {
-		t.Fatalf("q11 = %08x want %08x", pix.Pix[54], src.Words[3])
-	}
-}
-
-func TestDrawImageRectSrcSubset(t *testing.T) {
-	img := gradientImage(4, 4)
-	pix := raster.NewPixmap(4, 4)
-	c := NewForPixmap(pix)
-	// Draw only the bottom-right 2x2 of the source into the full destination.
-	c.DrawImageRect(img, geom.RectLTRB(2, 2, 4, 4), geom.RectWH(4, 4),
-		shaders.SamplingOptions{}, nil, ConstraintStrict)
-
-	src := img.PeekPixels(imagecore.CachingAllow)
-	if pix.Pix[0] != src.Words[2*4+2] {
-		t.Fatalf("subset origin = %08x want %08x", pix.Pix[0], src.Words[10])
-	}
-	if pix.Pix[3*4+3] != src.Words[3*4+3] {
-		t.Fatalf("subset corner = %08x want %08x", pix.Pix[15], src.Words[15])
-	}
-}
-
-func TestDrawImageAlphaModulates(t *testing.T) {
-	img := gradientImage(2, 2)
-	pix := raster.NewPixmap(4, 4)
-	c := NewForPixmap(pix)
-	paint := NewPaint()
-	paint.Color = paint.Color.WithAlpha(0x80)
-	c.DrawImage(img, 0, 0, shaders.SamplingOptions{}, paint)
-
-	src := img.PeekPixels(imagecore.CachingAllow)
-	// The sprite lane blends with a premul lerp of scale 129 (src over dst=0): channel*129>>8.
-	want := src.Words[0] & 0xFF * 129 >> 8
-	if got := pix.Pix[0] & 0xFF; got != want {
-		t.Fatalf("alpha-modulated r = %d want %d", got, want)
+		src := img.PeekPixels(imagecore.CachingAllow)
+		for _, p := range tc.probes {
+			got := pix.Pix[p.dy*tc.pixSize+p.dx]
+			if want := src.Words[p.sy*src.RowElems+p.sx]; got != want {
+				t.Errorf("%s: dst (%d,%d) = %08x want src (%d,%d) %08x", tc.name, p.dx, p.dy, got, p.sx, p.sy, want)
+			}
+		}
 	}
 }
 
@@ -174,20 +181,6 @@ func TestSaveLayerRestoreWithColorFilter(t *testing.T) {
 	}
 }
 
-func TestSaveLayerRestoreWithoutFilterUnchanged(t *testing.T) {
-	// The plain restore continues through the sprite lane byte-exactly.
-	pix := raster.NewPixmap(4, 4)
-	c := NewForPixmap(pix)
-	c.SaveLayerAlpha(nil, 255)
-	red := NewPaint()
-	red.Color = 0xFFFF0000
-	c.DrawRect(geom.RectWH(4, 4), red)
-	c.Restore()
-	if got := pix.Pix[5]; got != 0xFF0000FF { // device word: R in byte 0
-		t.Fatalf("restore = %08x", got)
-	}
-}
-
 func TestDrawImageRotatedUsesShaderLane(t *testing.T) {
 	img := gradientImage(4, 4)
 	pix := raster.NewPixmap(12, 12)
@@ -236,7 +229,7 @@ func TestDrawImageNineInvalidCenterKeepsCallerPaint(t *testing.T) {
 	invalidCenter := geom.IRect{Left: 2, Top: 2, Right: 2, Bottom: 2}
 	validCenter := geom.IRect{Left: 1, Top: 1, Right: 3, Bottom: 3}
 
-	drawNine := func(center geom.IRect, aa bool) *raster.Pixmap {
+	drawNine := func(center geom.IRect, aa bool, mf maskfilter.MaskFilter) *raster.Pixmap {
 		pix := raster.NewPixmap(24, 24)
 		c := NewForPixmap(pix)
 		c.Translate(12, 12)
@@ -244,12 +237,13 @@ func TestDrawImageNineInvalidCenterKeepsCallerPaint(t *testing.T) {
 		c.Translate(-8, -8)
 		p := NewPaint()
 		p.AntiAlias = aa
+		p.MaskFilter = mf
 		c.DrawImageNine(img, center, geom.RectWH(16, 16), shaders.FilterNearest, p)
 		return pix
 	}
 
-	aaPix := drawNine(invalidCenter, true)
-	bwPix := drawNine(invalidCenter, false)
+	aaPix := drawNine(invalidCenter, true, nil)
+	bwPix := drawNine(invalidCenter, false, nil)
 	if equalPixmaps(aaPix, bwPix) {
 		t.Error("the invalid-lattice fallback ignored the paint's AntiAlias flag")
 	}
@@ -264,9 +258,11 @@ func TestDrawImageNineInvalidCenterKeepsCallerPaint(t *testing.T) {
 		t.Error("the antialiased fallback produced no partially covered edge pixels")
 	}
 
-	// The lattice path proper still cleans the paint: those patches abut, and AA on their shared edges seams.
-	if !equalPixmaps(drawNine(validCenter, true), drawNine(validCenter, false)) {
-		t.Error("the lattice patch draws must still be cleaned of AntiAlias")
+	// The lattice path proper still cleans the paint of its mask filter and AntiAlias: those patches abut, and AA on
+	// their shared edges seams.
+	blur := maskfilter.NewBlur(maskfilter.BlurNormal, 2, true)
+	if !equalPixmaps(drawNine(validCenter, true, blur), drawNine(validCenter, false, nil)) {
+		t.Error("the lattice patch draws must still be cleaned of the mask filter and AntiAlias")
 	}
 }
 

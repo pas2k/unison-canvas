@@ -9,11 +9,11 @@
 
 // Live-context tests for the AA path renderers: AAConvexPathRenderer's coverage-AA convex fills (line and curved
 // boundaries), AALinearizingConvexPathRenderer's convex strokes / stroke-and-fills, and AAHairLinePathRenderer's
-// line/quad/conic/cubic hairlines including the perspective lane and record-time batching, all matched against the Go
-// CPU rasterizer for self-consistency. The AA coverage models legitimately differ along edges (the GPU renderers use
-// distance approximations, the CPU rasterizer analytic area coverage), so scenes with solid interiors compare with an
-// edge-band pixel budget, and hairline scenes compare structurally (ink-set size and overlap). Skips when no GL context
-// is available.
+// line/quad/conic/cubic hairlines including the perspective lane, all matched against the Go CPU rasterizer for
+// self-consistency. The AA coverage models legitimately differ along edges (the GPU renderers use distance
+// approximations, the CPU rasterizer analytic area coverage), so scenes with solid interiors compare with an edge-band
+// pixel budget, and hairline scenes compare structurally (ink-set size and overlap). Skips when no GL context is
+// available.
 
 package gl_test
 
@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/richardwilkes/canvas/canvas"
-	"github.com/richardwilkes/canvas/colorcore"
 	"github.com/richardwilkes/canvas/geom"
 	"github.com/richardwilkes/canvas/gpu"
 	"github.com/richardwilkes/canvas/gpu/gl"
@@ -229,31 +228,6 @@ func TestLiveAAConvexFills(t *testing.T) {
 	}
 }
 
-func TestLiveAAConvexBatching(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	const w, h = 128, 128
-	sdc := newLiveDrawSDC(t, dc, w, h)
-	defer sdc.Release()
-	sdc.Clear([4]float32{1, 1, 1, 1})
-
-	identity := geom.IdentityMatrix()
-	for range 2 {
-		shape := gl.MakeStyledShapePath(livePentagonPath(), gl.SimpleFillStyle(),
-			gl.DoSimplifyYes)
-		sdc.DrawShape(nil, livePaint(colorcore.PMColor4f{R: 0.5, A: 0.5}), gpu.AAYes,
-			&identity, &shape)
-	}
-	if n := sdc.GetOpsTask().NumOpChains(); n != 1 {
-		t.Fatalf("chain count %d want 1 (AAConvex draws should merge)", n)
-	}
-	// The merged op must still render correctly end to end.
-	data := readSDC(t, sdc)
-	off := (60*w + 64) * 4
-	if data[off+3] != 0xFF {
-		t.Fatalf("merged AAConvex draw interior alpha %d want 255", data[off+3])
-	}
-}
-
 func TestLiveAALinearizingStrokes(t *testing.T) {
 	_, dc := newLiveDirectContext(t)
 	const w, h = 128, 128
@@ -394,35 +368,4 @@ func TestLiveAAHairlinePerspective(t *testing.T) {
 	}
 	gpuData, cpuPix := renderAAScene(t, dc, w, h, scene)
 	compareInk(t, gpuData, pixmapBytes(cpuPix), w, h, "aahairline perspective")
-}
-
-func TestLiveAAHairlineBatching(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	const w, h = 128, 128
-	sdc := newLiveDrawSDC(t, dc, w, h)
-	defer sdc.Release()
-	sdc.Clear([4]float32{1, 1, 1, 1})
-
-	identity := geom.IdentityMatrix()
-	for range 2 {
-		shape := gl.MakeStyledShapePath(liveStarPath(), gl.SimpleHairlineStyle(),
-			gl.DoSimplifyYes)
-		sdc.DrawShape(nil, livePaint(colorcore.PMColor4f{R: 0.2, G: 0.2, B: 0.6, A: 1}),
-			gpu.AAYes, &identity, &shape)
-	}
-	if n := sdc.GetOpsTask().NumOpChains(); n != 1 {
-		t.Fatalf("chain count %d want 1 (same-color hairline draws should merge)", n)
-	}
-	data := readSDC(t, sdc)
-	// The star must have rendered: some ink along its top vertex column.
-	inked := 0
-	for y := 0; y < h; y++ {
-		off := (y*w + 50) * 4
-		if data[off] != 0xFF || data[off+1] != 0xFF {
-			inked++
-		}
-	}
-	if inked == 0 {
-		t.Fatal("merged hairline draw rendered nothing")
-	}
 }

@@ -9,10 +9,10 @@
 
 // Live-context tests for the lifetime of thread-safe-cache view hits. Once a cached view's proxy has been flushed it is
 // instantiated and its lazy callback is gone, so the only things keeping its texture alive are the cache entry and the
-// recording ref the cache hands out with every find or add. These tests record a cache hit, then drop the cache's
+// recording ref the cache hands out with every find or add. The test records a cache hit, then drops the cache's
 // uniquely held entries before the hit is flushed (an explicit purge mid-recording, and a budget purge from inside the
-// flush's own resource allocation), and require the hit to render exactly like the first draw. Skips when no GL context
-// is available.
+// flush's own resource allocation), and requires the hit to render exactly like the first draw. Skips when no GL
+// context is available.
 
 package gl_test
 
@@ -110,11 +110,12 @@ func (l *tscLiveLane) drawFirst(t *testing.T, dc *gl.DirectContext) (first []byt
 	return first, sdc
 }
 
-// recordHit records the lane again, requiring a cache hit.
+// recordHit records the lane again, requiring a cache hit that adds no entry.
 func (l *tscLiveLane) recordHit(t *testing.T, dc *gl.DirectContext) *gl.SurfaceDrawContext {
 	t.Helper()
 	cache := dc.ThreadSafeCache()
 	hits := cache.Stats().Hits
+	entries := cache.NumEntries()
 	sdc, lane := l.record(t, dc)
 	if lane != l.lane {
 		t.Fatalf("second draw took lane %q, want %q", lane, l.lane)
@@ -122,64 +123,72 @@ func (l *tscLiveLane) recordHit(t *testing.T, dc *gl.DirectContext) *gl.SurfaceD
 	if cache.Stats().Hits <= hits {
 		t.Fatal("second draw did not hit the thread-safe cache")
 	}
+	if got := cache.NumEntries(); got != entries {
+		t.Fatalf("second draw changed the cache entry count from %d to %d", entries, got)
+	}
 	return sdc
 }
 
-// TestLiveThreadSafeCacheHitSurvivesPurge purges every unlocked resource between recording a cache hit and flushing it.
-// The purge drops all uniquely held cache entries; a hit recorded in the pending flush must not be one of them, or its
-// instantiated proxy loses its texture and the draw comes out blank.
+// TestLiveThreadSafeCacheHitSurvivesPurge drops the cache's uniquely held entries between recording a cache hit and
+// flushing it. A hit recorded in the pending flush must not be one of them, or its instantiated proxy loses its texture
+// and the draw comes out blank.
 func TestLiveThreadSafeCacheHitSurvivesPurge(t *testing.T) {
-	for i := range tscLiveLanes {
-		l := &tscLiveLanes[i]
-		t.Run(l.name, func(t *testing.T) {
-			_, dc := newLiveDirectContext(t)
-			first, firstSDC := l.drawFirst(t, dc)
-			defer firstSDC.Release()
-
-			sdc := l.recordHit(t, dc)
-			dc.PurgeUnlockedResources(gpu.PurgeAllResources)
-			second := readSDC(t, sdc)
-			sdc.Release()
-			if !bytes.Equal(first, second) {
-				t.Fatalf("hit purged mid-recording rendered differently: center %d, want %d",
-					chanAt(second, tscLiveSize, tscLiveSize/2, tscLiveSize/2),
-					chanAt(first, tscLiveSize, tscLiveSize/2, tscLiveSize/2))
-			}
-
-			// The flush released the recording refs, so the entry is uniquely held again and an idle purge reclaims it.
-			before := dc.ThreadSafeCache().NumEntries()
-			dc.PurgeUnlockedResources(gpu.PurgeAllResources)
-			if after := dc.ThreadSafeCache().NumEntries(); after >= before {
-				t.Fatalf("entries after an idle purge = %d, want fewer than %d", after, before)
-			}
-		})
+	purges := []struct {
+		// flush purges and reads back the destination holding the recorded hit.
+		flush             func(t *testing.T, dc *gl.DirectContext, sdc *gl.SurfaceDrawContext) []byte
+		name              string
+		idlePurgeReclaims bool
+	}{
+		{
+			name: "mid-recording",
+			flush: func(t *testing.T, dc *gl.DirectContext, sdc *gl.SurfaceDrawContext) []byte {
+				dc.PurgeUnlockedResources(gpu.PurgeAllResources)
+				return readSDC(t, sdc)
+			},
+			idlePurgeReclaims: true,
+		},
+		{
+			// Shrinks the budget to just above the current usage so that the flush's own allocation of the destination
+			// texture pushes the cache over budget. The resulting budget purge runs from inside the resource
+			// allocator's assignment pass, after the hit's already instantiated proxy was planned without a register.
+			name: "mid-flush-budget",
+			flush: func(t *testing.T, dc *gl.DirectContext, sdc *gl.SurfaceDrawContext) []byte {
+				rc := dc.ResourceCache()
+				limit := rc.MaxResourceBytes()
+				rc.SetLimit(rc.BudgetedResourceBytes() + 1)
+				second := readSDC(t, sdc)
+				rc.SetLimit(limit)
+				return second
+			},
+		},
 	}
-}
+	for _, p := range purges {
+		for i := range tscLiveLanes {
+			l := &tscLiveLanes[i]
+			t.Run(p.name+"/"+l.name, func(t *testing.T) {
+				_, dc := newLiveDirectContext(t)
+				first, firstSDC := l.drawFirst(t, dc)
+				defer firstSDC.Release()
 
-// TestLiveThreadSafeCacheHitSurvivesFlushBudgetPurge records a cache hit, then shrinks the budget to just above the
-// current usage so that the flush's own allocation of the destination texture pushes the cache over budget. The
-// resulting budget purge runs from inside the resource allocator's assignment pass, after the hit's already
-// instantiated proxy was planned without a register, and must not drop the hit's entry.
-func TestLiveThreadSafeCacheHitSurvivesFlushBudgetPurge(t *testing.T) {
-	for i := range tscLiveLanes {
-		l := &tscLiveLanes[i]
-		t.Run(l.name, func(t *testing.T) {
-			_, dc := newLiveDirectContext(t)
-			first, firstSDC := l.drawFirst(t, dc)
-			defer firstSDC.Release()
+				sdc := l.recordHit(t, dc)
+				second := p.flush(t, dc, sdc)
+				sdc.Release()
+				if !bytes.Equal(first, second) {
+					t.Fatalf("hit purged %s rendered differently: center %d, want %d", p.name,
+						chanAt(second, tscLiveSize, tscLiveSize/2, tscLiveSize/2),
+						chanAt(first, tscLiveSize, tscLiveSize/2, tscLiveSize/2))
+				}
 
-			sdc := l.recordHit(t, dc)
-			rc := dc.ResourceCache()
-			limit := rc.MaxResourceBytes()
-			rc.SetLimit(rc.BudgetedResourceBytes() + 1)
-			second := readSDC(t, sdc)
-			rc.SetLimit(limit)
-			sdc.Release()
-			if !bytes.Equal(first, second) {
-				t.Fatalf("hit purged mid-flush rendered differently: center %d, want %d",
-					chanAt(second, tscLiveSize, tscLiveSize/2, tscLiveSize/2),
-					chanAt(first, tscLiveSize, tscLiveSize/2, tscLiveSize/2))
-			}
-		})
+				if p.idlePurgeReclaims {
+					// The flush released the recording refs, so the entry is uniquely held again and an idle purge
+					// reclaims it.
+					before := dc.ThreadSafeCache().NumEntries()
+					dc.PurgeUnlockedResources(gpu.PurgeAllResources)
+					if after := dc.ThreadSafeCache().NumEntries(); after >= before {
+						t.Fatalf("entries after an idle purge = %d, want fewer than %d", after, before)
+					}
+				}
+			})
+		}
 	}
 }

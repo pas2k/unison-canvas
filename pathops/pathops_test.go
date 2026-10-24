@@ -388,6 +388,7 @@ func TestOpBasicAreas(t *testing.T) {
 		{op: ReverseDifference, want: 50},
 		{op: XOR, want: 100},
 	}
+	results := make(map[PathOp]*path.Path, len(cases))
 	for _, tc := range cases {
 		result, ok := Op(a, b, tc.op)
 		if !ok {
@@ -398,9 +399,10 @@ func TestOpBasicAreas(t *testing.T) {
 			t.Errorf("op %d: fill = %d, want even-odd", tc.op, result.FillType())
 		}
 		checkArea(t, fmt.Sprintf("op %d", tc.op), result, tc.want, 0.02)
+		results[tc.op] = result
 	}
 
-	// Sample-point sanity for each op.
+	// Sample-point sanity for each op, plus determinism: rerunning the op must reproduce the first result exactly.
 	inA := geom.Point{X: 2, Y: 5}
 	inBoth := geom.Point{X: 7, Y: 5}
 	inB := geom.Point{X: 13, Y: 5}
@@ -415,7 +417,10 @@ func TestOpBasicAreas(t *testing.T) {
 		{op: ReverseDifference, want: [4]bool{false, false, true, false}},
 		{op: XOR, want: [4]bool{true, false, true, false}},
 	} {
-		result, _ := Op(a, b, tc.op)
+		result, ok := Op(a, b, tc.op)
+		if !ok || !path.Equal(result, results[tc.op]) {
+			t.Errorf("op %d must be deterministic", tc.op)
+		}
 		for i, pt := range []geom.Point{inA, inBoth, inB, outside} {
 			if got := result.Contains(pt.X, pt.Y); got != tc.want[i] {
 				t.Errorf("op %d: contains(%v) = %v, want %v", tc.op, pt, got, tc.want[i])
@@ -644,15 +649,6 @@ func TestOpCurves(t *testing.T) {
 	checkArea(t, "disc union", result, 2*math.Pi*r*r-lens, 5)
 	if n := contourCount(result); n != 1 {
 		t.Errorf("disc union contours = %d, want 1", n)
-	}
-}
-
-func TestOpDeterminism(t *testing.T) {
-	a, b := overlappingRectsAsPolys()
-	r1, ok1 := Op(a, b, XOR)
-	r2, ok2 := Op(a, b, XOR)
-	if !ok1 || !ok2 || !path.Equal(r1, r2) {
-		t.Error("op must be deterministic")
 	}
 }
 

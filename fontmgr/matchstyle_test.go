@@ -14,7 +14,6 @@ package fontmgr
 
 import (
 	"math"
-	"slices"
 	"sort"
 	"testing"
 
@@ -228,30 +227,6 @@ func TestCSS3ScoreTierPriority(t *testing.T) {
 	}
 }
 
-// TestCSS3ScoreWidthTierOrder pins the width tier against the CSS3 font-stretch rule (see css3WidthRanking) for every
-// pattern width against every candidate width. Upstream Skia's strict `current.width() > pattern.width()` test scores
-// the exact-width candidate its raw width instead of the full 10, so for a pattern of width 6, 7 or 8 a wider face
-// outranks the exact one.
-func TestCSS3ScoreWidthTierOrder(t *testing.T) {
-	// Every candidate carries the same weight and slant, so only the width tier separates them.
-	set := make([]font.Style, len(allWidths))
-	for i, w := range allWidths {
-		set[i] = font.NewStyle(font.WeightNormal, w, font.SlantUpright)
-	}
-	styleAt := func(i int) font.Style { return set[i] }
-	for _, patternWidth := range allWidths {
-		want := css3WidthRanking(patternWidth)
-		pattern := font.NewStyle(font.WeightNormal, patternWidth, font.SlantUpright)
-		got := make([]int, 0, len(set))
-		for _, i := range rankStylesCSS3(pattern, len(set), styleAt) {
-			got = append(got, set[i].Width())
-		}
-		if !slices.Equal(got, want) {
-			t.Errorf("width %d pattern ranked the widths %v, want %v", patternWidth, got, want)
-		}
-	}
-}
-
 // TestSelectStyleCSS3WalkOrder pins the order the walk produces: exactly the stable descending-score order a full sort
 // of the candidates produces. Only the maximum is extracted up front, but every caller depends on the remainder still
 // arriving best-first, with ties keeping first-wins preference. The large tie-heavy sets at the end put the deferred
@@ -402,11 +377,8 @@ func TestCSS3ScoreRawStyleComponents(t *testing.T) {
 			}
 		})
 	}
-}
 
-// TestMatchRawStyleThroughPublicAPI drives a raw (unpinned) style through the exported entry points that reach
-// css3Score, over the hermetic corpus.
-func TestMatchRawStyleThroughPublicAPI(t *testing.T) {
+	// The exported entry points that reach css3Score answer a raw style too, over the hermetic corpus.
 	m := newTestManager(t)
 	raw := font.Style(3 << 24) // slant 3: one past SlantOblique
 	if tf := m.MatchFamily("Test").MatchStyle(raw); tf == nil {

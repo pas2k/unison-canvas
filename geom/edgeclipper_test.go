@@ -86,22 +86,6 @@ func TestClipLineLeftBecomesVertical(t *testing.T) {
 	}
 }
 
-func TestClipLineRightCulled(t *testing.T) {
-	clip := RectLTRB(0, 0, 100, 100)
-	e := NewEdgeClipper(true)
-	if e.ClipLine(Point{X: 110, Y: 10}, Point{X: 150, Y: 90}, clip) {
-		t.Fatal("expected culled output with canCullToTheRight")
-	}
-	e = NewEdgeClipper(false)
-	if !e.ClipLine(Point{X: 110, Y: 10}, Point{X: 150, Y: 90}, clip) {
-		t.Fatal("expected vertical line without culling")
-	}
-	segs := drainClipper(e)
-	if len(segs) != 1 || segs[0].pts[0].X != 100 || segs[0].pts[1].X != 100 {
-		t.Errorf("segs = %+v", segs)
-	}
-}
-
 func TestClipLineCrossingProducesSegments(t *testing.T) {
 	clip := RectLTRB(0, 0, 10, 10)
 	e := NewEdgeClipper(false)
@@ -427,6 +411,8 @@ func TestClipLineCullToTheRightOnlyWhollyRight(t *testing.T) {
 	}
 	if n := ClipLine(&wholly, clip, &lines, false); n != 1 {
 		t.Errorf("wholly-right segment without culling produced %d segments, want 1", n)
+	} else if lines[0].X != clip.Right || lines[1].X != clip.Right {
+		t.Errorf("wholly-right segment without culling = %v, want a vertical line on the right edge", lines[:2])
 	}
 	// Crosses the clip and exits to the right: the right-edge vertical piece survives regardless of the flag.
 	crossing := [2]Point{{X: 50, Y: 10}, {X: 150, Y: 90}}

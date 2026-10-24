@@ -7,8 +7,7 @@
 // This Source Code Form is "Incompatible With Secondary Licenses", as
 // defined by the Mozilla Public License, version 2.0.
 
-// Tests for the cubic/line intersection solver (TestPathOpsCubicLineIntersection,
-// TestPathOpsCubicLineIntersectionOneOff, and TestPathOpsFailCubicLineIntersection), plus focused reduceCubic
+// Tests for the cubic/line intersection solver (TestPathOpsCubicLineIntersection), plus focused reduceCubic
 // classification and cubic-bounds tests. The cubic is built from the double-precision test points directly (debugSet,
 // no float32 rounding); the few float-literal coordinates in the corpus are widened through float32 (f32d) to preserve
 // their original float32 rounding.
@@ -61,13 +60,14 @@ func doCubicLineIntersect(in *intersections, cubic dCubic, line dLine) (int, boo
 }
 
 type lineCubicCase struct {
+	roots *int // when set, the count intersectCubicLine's general lane must report
 	cubic [4]dPoint
 	line  dLine
 }
 
 var lineCubicTests = []lineCubicCase{
 	{cubic: cu4(0, 6, 1.0851458311080933, 4.3722810745239258, 1.5815209150314331, 3.038947582244873,
-		1.9683018922805786, 1.9999997615814209), line: dl(3, 2, 1, 2)},
+		1.9683018922805786, 1.9999997615814209), line: dl(3, 2, 1, 2), roots: new(1)},
 	{cubic: cu4(0.468027353, 4, 1.06734705, 1.33333337, 1.36700678, 0, 3, 0), line: dl(2, 1, 0, 1)},
 	{
 		cubic: cu4(-634.60540771484375, -481.262939453125, 266.2696533203125, -752.70867919921875,
@@ -94,12 +94,10 @@ var lineCubicTests = []lineCubicCase{
 		235.68154907226562, 531), line: dl(286.69512939453125, 291, 229.30485534667969, 561)},
 	{cubic: cu4(1, 2, 2, 6, 2, 0, 1, 0), line: dl(1, 0, 1, 2)},
 	{cubic: cu4(0, 0, 0, 1, 0, 1, 1, 1), line: dl(0, 1, 1, 0)},
-}
-
-var failLineCubicTests = []lineCubicCase{
 	{
 		cubic: cu4(37.5273438, -1.44140625, 37.8736992, -1.69921875, 38.1640625, -2.140625, 38.3984375, -2.765625),
 		line:  dl(40.625, -5.7890625, 37.7109375, 1.3515625),
+		roots: new(0),
 	},
 }
 
@@ -133,42 +131,10 @@ func TestPathOpsCubicLineIntersection(t *testing.T) {
 		in := newIntersections()
 		result, _ := doCubicLineIntersect(in, cubic, tc.line)
 		checkCubicOnBoth(t, index, cubic, tc.line, in, result)
-	}
-}
-
-func TestPathOpsCubicLineIntersectionOneOff(t *testing.T) {
-	index := 0
-	tc := lineCubicTests[index]
-	var cubic dCubic
-	cubic.debugSet(tc.cubic)
-	in := newIntersections()
-	result, _ := doCubicLineIntersect(in, cubic, tc.line)
-	checkCubicOnBoth(t, index, cubic, tc.line, in, result)
-
-	in2 := newIntersections()
-	in2.intersectCubicLine(cubic, tc.line)
-	if in2.used != 1 {
-		t.Fatalf("oneOff: used=%d, want 1", in2.used)
-	}
-}
-
-func TestPathOpsFailCubicLineIntersection(t *testing.T) {
-	for index, tc := range failLineCubicTests {
-		var cubic dCubic
-		cubic.debugSet(tc.cubic)
-		var reduce1, reduce2 reduceOrder
-		order1 := reduce1.reduceCubic(cubic, noQuadratics)
-		order2 := reduce2.reduceLine(tc.line)
-		if order1 < 4 {
-			t.Fatalf("fail %d: cubic order=%d (expected 4)", index, order1)
-		}
-		if order2 < 2 {
-			t.Fatalf("fail %d: line order=%d (expected 2)", index, order2)
-		}
-		in := newIntersections()
-		roots := in.intersectCubicLine(cubic, tc.line)
-		if roots != 0 {
-			t.Fatalf("fail %d: roots=%d, want 0", index, roots)
+		if tc.roots != nil {
+			if roots := newIntersections().intersectCubicLine(cubic, tc.line); roots != *tc.roots {
+				t.Fatalf("test %d: intersectCubicLine roots=%d, want %d", index, roots, *tc.roots)
+			}
 		}
 	}
 }

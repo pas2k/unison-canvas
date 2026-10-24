@@ -41,6 +41,9 @@ func TestClipStackRectIntersect(t *testing.T) {
 	if cs.isWideOpen() {
 		t.Error("after a rect clip the stack is not wide open")
 	}
+	if id := cs.getTopmostGenID(); id < 3 {
+		t.Errorf("a real clip's gen ID should be >= 3, got %d", id)
+	}
 	if got := cs.bounds(geom.IRectWH(100, 100)); got != geom.RectLTRB(10, 10, 50, 50) {
 		t.Errorf("bounds after clip = %v, want {10,10,50,50}", got)
 	}
@@ -85,20 +88,6 @@ func TestClipStackSaveRestore(t *testing.T) {
 	cs.Restore()
 	if !cs.isWideOpen() {
 		t.Error("restore should drop the clip added since save")
-	}
-}
-
-func TestClipStackGenIDChanges(t *testing.T) {
-	cs := NewClipStack()
-	m := geom.IdentityMatrix()
-	before := cs.getTopmostGenID()
-	cs.ClipRect(geom.RectLTRB(10, 10, 50, 50), &m, raster.ClipIntersect, false)
-	after := cs.getTopmostGenID()
-	if after == before {
-		t.Error("gen ID should change after adding a clip")
-	}
-	if after < 3 {
-		t.Errorf("a real clip's gen ID should be >= 3, got %d", after)
 	}
 }
 

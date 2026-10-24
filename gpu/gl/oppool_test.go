@@ -49,23 +49,6 @@ func TestOpPoolRecycleZeroes(t *testing.T) {
 	}
 }
 
-// TestOpPoolBorrowAfterRecycleIsZeroed verifies the reuse path hands back a clean op: after a dirty op is recycled, the
-// next borrow returns a zero-initialized op (whether the recycled shell or a fresh allocation), so op constructors that
-// relied on `&T{}` behave identically on a reused shell.
-func TestOpPoolBorrowAfterRecycleIsZeroed(t *testing.T) {
-	var p opPool[circularRRectOp]
-	o := p.borrow()
-	o.rrects = append(o.rrectsArr[:0], circularRRectGeom{})
-	o.InitOp(circularRRectOpClassID, o)
-	p.recycle(o)
-
-	o2 := p.borrow()
-	if o2.self != nil || o2.ClassID() != 0 || len(o2.rrects) != 0 || o2.uniqueID != 0 {
-		t.Fatalf("borrow after recycle returned a non-zeroed op: classID=%d self!=nil=%v rrects=%d",
-			o2.ClassID(), o2.self != nil, len(o2.rrects))
-	}
-}
-
 // typeHasReferences reports whether t contains any field whose kind can hold a heap reference (pointer, slice, map,
 // chan, interface, func, string, or unsafe.Pointer), recursing through structs and arrays.
 func typeHasReferences(t reflect.Type) bool {

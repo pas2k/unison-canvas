@@ -358,14 +358,12 @@ func TestReverseAddPath(t *testing.T) {
 		15, 5, 10, 0,
 		0, 0,
 	))
-}
 
-func TestReverseAddPathTwoContours(t *testing.T) {
-	src := New()
+	// Contours come out in reverse order, each one reversed.
+	src = New()
 	src.MoveTo(0, 0).LineTo(1, 0)
 	src.MoveTo(10, 10).LineTo(11, 10)
-
-	dst := New()
+	dst = New()
 	dst.ReverseAddPath(src)
 	checkVerbs(t, dst, VerbMove, VerbLine, VerbMove, VerbLine)
 	checkPoints(t, dst, pts(11, 10, 10, 10, 1, 0, 0, 0))

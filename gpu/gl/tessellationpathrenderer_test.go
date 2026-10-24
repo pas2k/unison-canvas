@@ -53,6 +53,22 @@ func TestOnStencilPathChopGuards(t *testing.T) {
 	if choppedLine != lineOnly {
 		t.Fatal("line-only stencil path must not be chopped")
 	}
+	// End to end, OnStencilPath must record a draw op for it without panicking.
+	dc := newShaderRecordingContext(t)
+	sdc := newDrawTestSDC(t, dc, 64, 64)
+	defer sdc.Release()
+	before := sdc.GetOpsTask().NumOpChains()
+	NewTessellationPathRenderer().OnStencilPath(&StencilPathArgs{
+		Context:                dc,
+		SurfaceDrawContext:     sdc,
+		ViewMatrix:             &identity,
+		Shape:                  &lineShape,
+		ClipConservativeBounds: hugeViewport,
+		DoStencilMSAA:          gpu.AANo,
+	})
+	if after := sdc.GetOpsTask().NumOpChains(); after <= before {
+		t.Fatalf("OnStencilPath recorded no draw op (chains %d -> %d)", before, after)
+	}
 
 	// A curved path whose device bounds exceed the threshold and whose conservative clip viewport is itself too large
 	// for preChopPathCurves must bail out (return false) rather than panic. OnStencilPath ignores the result and leaves
@@ -64,38 +80,6 @@ func TestOnStencilPathChopGuards(t *testing.T) {
 	curvedShape := makeFillShape(curved)
 	if tessChopPathIfNecessary(&identity, &curvedShape, hugeViewport, curvedShape.Style().Rec(), nil) {
 		t.Fatal("a curved path with an oversized viewport should report chopping as impossible")
-	}
-}
-
-// TestOnStencilPathHugeLineOnly drives OnStencilPath end-to-end for a large straight-line-only non-convex simple-fill
-// clip element (see TestOnStencilPathChopGuards): it must record a draw op without panicking.
-func TestOnStencilPathHugeLineOnly(t *testing.T) {
-	dc := newShaderRecordingContext(t)
-	sdc := newDrawTestSDC(t, dc, 64, 64)
-	defer sdc.Release()
-
-	lineOnly := &path.Path{}
-	lineOnly.MoveTo(0, 0)
-	lineOnly.LineTo(2_000_000, 0)
-	lineOnly.LineTo(1_000_000, 1_000)
-	lineOnly.LineTo(2_000_000, 2_000_000)
-	lineOnly.LineTo(0, 2_000_000)
-	lineOnly.Close()
-	shape := makeFillShape(lineOnly)
-	identity := geom.IdentityMatrix()
-
-	before := sdc.GetOpsTask().NumOpChains()
-	r := NewTessellationPathRenderer()
-	r.OnStencilPath(&StencilPathArgs{
-		Context:                dc,
-		SurfaceDrawContext:     sdc,
-		ViewMatrix:             &identity,
-		Shape:                  &shape,
-		ClipConservativeBounds: geom.IRect{Left: 0, Top: 0, Right: 2_000_000, Bottom: 2_000_000},
-		DoStencilMSAA:          gpu.AANo,
-	})
-	if after := sdc.GetOpsTask().NumOpChains(); after <= before {
-		t.Fatalf("OnStencilPath recorded no draw op (chains %d -> %d)", before, after)
 	}
 }
 

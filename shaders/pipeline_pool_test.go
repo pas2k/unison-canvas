@@ -65,8 +65,9 @@ func TestGradientContextReuseIsClean(t *testing.T) {
 }
 
 // TestBlendTwoGradientsUseDistinctContexts locks that a single pipeline containing two gradient fill stages (a
-// BlendShader inlines both children) hands each stage its own gradientCtx — a shared one would let the second compile
-// clobber the first's factors/biases at ShadeSpan time.
+// BlendShader inlines both children) hands each stage its own gradientCtx and matrixCtx — a shared gradientCtx would
+// let the second compile clobber the first's factors/biases, and a shared matrixCtx the second child's ptsToUnit stage
+// clobber the first's coefficients, at ShadeSpan time.
 func TestBlendTwoGradientsUseDistinctContexts(t *testing.T) {
 	id := geom.IdentityMatrix()
 	// Both children are 3-stop gradients. Every fill lane draws its context from nextGradCtx (the 2-stop fast lane
@@ -87,10 +88,17 @@ func TestBlendTwoGradientsUseDistinctContexts(t *testing.T) {
 	if p.gradCtxs[0] == p.gradCtxs[1] {
 		t.Fatal("the two gradient fill stages share a context (would clobber)")
 	}
+	if p.matrixCtxN != 2 {
+		t.Fatalf("expected 2 matrix contexts (one per gradient ptsToUnit), got %d", p.matrixCtxN)
+	}
+	if p.matrixCtxs[0] == p.matrixCtxs[1] {
+		t.Fatal("the two matrix stages share a context (would clobber)")
+	}
 }
 
 // TestRecyclePipelineResetsState locks that RecyclePipeline leaves a Pipeline in the reset state Compile relies on: no
-// stages, no handed-out gradient contexts, cleared paint color.
+// stages, every free-list counter zeroed (so a reused pipeline hands out fresh contexts) with its storage retained,
+// cleared paint color.
 func TestRecyclePipelineResetsState(t *testing.T) {
 	id := geom.IdentityMatrix()
 	grad := NewLinearGradient(geom.Point{}, geom.Point{X: 100},
@@ -100,6 +108,25 @@ func TestRecyclePipelineResetsState(t *testing.T) {
 	p.ShadeSpan(0, 0, junk[:])
 	if len(p.stages) == 0 || p.gradCtxN == 0 {
 		t.Fatal("expected a compiled gradient to have stages and a handed-out context")
+	}
+	p.nextLaneMask()
+	p.nextBlendCtx()
+	p.nextScale1Ctx()
+	p.nextColorFuncCtx()
+	p.nextBlendShaderCtx()
+	p.nextGatherCtx()
+	p.nextSamplerCtx()
+	p.nextDecalCtx()
+	p.nextMorphologyCtx()
+	p.nextDisplacementCtx()
+	p.nextNormalCtx()
+	p.nextLightingCtx()
+	p.nextMatrixConvCtx()
+	p.nextArithmeticCtx()
+	if p.laneMaskN == 0 || p.blendCtxN == 0 || p.scale1CtxN == 0 || p.colorFuncCtxN == 0 || p.blendShaderCtxN == 0 ||
+		p.gatherCtxN == 0 || p.samplerCtxN == 0 || p.decalCtxN == 0 || p.morphCtxN == 0 || p.dispCtxN == 0 ||
+		p.normalCtxN == 0 || p.lightingCtxN == 0 || p.matConvCtxN == 0 || p.arithCtxN == 0 {
+		t.Fatal("expected the other free-list counters to be bumped")
 	}
 	RecyclePipeline(p)
 	if len(p.stages) != 0 {
@@ -114,6 +141,15 @@ func TestRecyclePipelineResetsState(t *testing.T) {
 	if p.matrixCtxN != 0 {
 		t.Fatalf("recycled pipeline retains matrixCtxN=%d", p.matrixCtxN)
 	}
+	if p.laneMaskN != 0 || p.blendCtxN != 0 || p.scale1CtxN != 0 || p.colorFuncCtxN != 0 || p.blendShaderCtxN != 0 ||
+		p.gatherCtxN != 0 || p.samplerCtxN != 0 || p.decalCtxN != 0 || p.morphCtxN != 0 || p.dispCtxN != 0 ||
+		p.normalCtxN != 0 || p.lightingCtxN != 0 || p.matConvCtxN != 0 || p.arithCtxN != 0 {
+		t.Fatalf("recycle left counters laneMaskN=%d blendCtxN=%d scale1CtxN=%d colorFuncCtxN=%d blendShaderCtxN=%d "+
+			"gatherCtxN=%d samplerCtxN=%d decalCtxN=%d morphCtxN=%d dispCtxN=%d normalCtxN=%d lightingCtxN=%d "+
+			"matConvCtxN=%d arithCtxN=%d", p.laneMaskN, p.blendCtxN, p.scale1CtxN, p.colorFuncCtxN, p.blendShaderCtxN,
+			p.gatherCtxN, p.samplerCtxN, p.decalCtxN, p.morphCtxN, p.dispCtxN, p.normalCtxN, p.lightingCtxN,
+			p.matConvCtxN, p.arithCtxN)
+	}
 	if (p.paintColor != colorcore.Color4f{}) {
 		t.Fatalf("recycled pipeline retains paint color %+v", p.paintColor)
 	}
@@ -123,6 +159,12 @@ func TestRecyclePipelineResetsState(t *testing.T) {
 	}
 	if len(p.matrixCtxs) == 0 {
 		t.Fatal("recycled pipeline dropped its matrix-context storage")
+	}
+	if len(p.laneMasks) == 0 || len(p.blendCtxs) == 0 || len(p.scale1Ctxs) == 0 || len(p.colorFuncCtxs) == 0 ||
+		len(p.blendShaderCtxs) == 0 || len(p.gatherCtxs) == 0 || len(p.samplerCtxs) == 0 || len(p.decalCtxs) == 0 ||
+		len(p.morphCtxs) == 0 || len(p.dispCtxs) == 0 || len(p.normalCtxs) == 0 || len(p.lightingCtxs) == 0 ||
+		len(p.matConvCtxs) == 0 || len(p.arithCtxs) == 0 {
+		t.Fatal("recycle dropped retained free-list storage")
 	}
 }
 
@@ -159,27 +201,6 @@ func TestMatrixContextReuseIsClean(t *testing.T) {
 	}
 	if p.matrixCtxN != 1 || p.matrixCtxs[0] != poison {
 		t.Fatalf("expected the poisoned matrix ctx to be reused (n=%d)", p.matrixCtxN)
-	}
-}
-
-// TestBlendTwoGradientsUseDistinctMatrixContexts locks that two gradient children in one pipeline each receive their
-// own matrixCtx — a shared one would let the second child's ptsToUnit stage clobber the first's coefficients at
-// ShadeSpan time.
-func TestBlendTwoGradientsUseDistinctMatrixContexts(t *testing.T) {
-	id := geom.IdentityMatrix()
-	g0 := NewLinearGradient(geom.Point{}, geom.Point{X: 100},
-		[]colorcore.Color{0xFFFF0000, 0xFF00FF00, 0xFF0000FF}, []float32{0, 0.3, 1}, TileClamp, nil)
-	g1 := NewRadialGradient(geom.Point{X: 50, Y: 20}, 40,
-		[]colorcore.Color{0xFF102030, 0xFF405060, 0xFFA0B0C0}, nil, TileMirror, nil)
-	p := Compile(NewBlend(raster.BlendSrcOver, g0, g1), id, opaqueBlack)
-	if p == nil {
-		t.Fatal("Compile returned nil")
-	}
-	if p.matrixCtxN != 2 {
-		t.Fatalf("expected 2 matrix contexts (one per gradient ptsToUnit), got %d", p.matrixCtxN)
-	}
-	if p.matrixCtxs[0] == p.matrixCtxs[1] {
-		t.Fatal("the two matrix stages share a context (would clobber)")
 	}
 }
 
@@ -222,7 +243,9 @@ func TestLaneMaskReuseIsClean(t *testing.T) {
 
 // TestBlendTwoBlendsUseDistinctBlendContexts locks that two blend stages in one pipeline (a nested blend shader) each
 // receive their own blendCtx — a shared one would let the second AppendBlend clobber the first's mode at ShadeSpan
-// time. The inner blend's mode is appended first.
+// time. The inner blend's mode is appended first. The two blend shaders likewise each receive their own
+// blendShaderCtx — a shared one would let the inner blend's store_src clobber the outer's saved dst output before the
+// outer's load_dst reads it.
 func TestBlendTwoBlendsUseDistinctBlendContexts(t *testing.T) {
 	id := geom.IdentityMatrix()
 	colors := []colorcore.Color{0xFFFF0000, 0xFF00FF00, 0xFF0000FF}
@@ -243,6 +266,12 @@ func TestBlendTwoBlendsUseDistinctBlendContexts(t *testing.T) {
 	}
 	if p.blendCtxs[0].mode != raster.BlendMultiply || p.blendCtxs[1].mode != raster.BlendScreen {
 		t.Fatalf("blend contexts hold the wrong modes: [0]=%d [1]=%d", p.blendCtxs[0].mode, p.blendCtxs[1].mode)
+	}
+	if p.blendShaderCtxN != 2 {
+		t.Fatalf("expected 2 blend-shader contexts, got %d", p.blendShaderCtxN)
+	}
+	if p.blendShaderCtxs[0] == p.blendShaderCtxs[1] {
+		t.Fatal("the two blend shaders share a store/load context (would clobber)")
 	}
 }
 
@@ -288,30 +317,6 @@ func TestBlendShaderContextReuseIsClean(t *testing.T) {
 	}
 }
 
-// TestNestedBlendUseDistinctBlendShaderContexts locks that two blend shaders in one pipeline (a blend whose dst child
-// is itself a blend) each receive their own blendShaderCtx — a shared one would let the inner blend's store_src clobber
-// the outer's saved dst output before the outer's load_dst reads it. The outer blend acquires its ctx first (at the top
-// of appendStages, before recursing), the inner second.
-func TestNestedBlendUseDistinctBlendShaderContexts(t *testing.T) {
-	id := geom.IdentityMatrix()
-	colors := []colorcore.Color{0xFFFF0000, 0xFF00FF00, 0xFF0000FF}
-	g0 := NewLinearGradient(geom.Point{}, geom.Point{X: 100}, colors, nil, TileClamp, nil)
-	g1 := NewLinearGradient(geom.Point{Y: 100}, geom.Point{}, colors, nil, TileClamp, nil)
-	g2 := NewRadialGradient(geom.Point{X: 50, Y: 50}, 40, colors, nil, TileMirror, nil)
-	outer := NewBlend(raster.BlendScreen, NewBlend(raster.BlendMultiply, g0, g1), g2)
-
-	p := Compile(outer, id, opaqueBlack)
-	if p == nil {
-		t.Fatal("Compile returned nil")
-	}
-	if p.blendShaderCtxN != 2 {
-		t.Fatalf("expected 2 blend-shader contexts, got %d", p.blendShaderCtxN)
-	}
-	if p.blendShaderCtxs[0] == p.blendShaderCtxs[1] {
-		t.Fatal("the two blend shaders share a store/load context (would clobber)")
-	}
-}
-
 // TestColorFuncTwoStagesUseDistinctContexts locks that two AppendColorFunc stages in one pipeline (as a compose color
 // filter appends) each receive their own colorFuncCtx and run in order — a shared context would run the second
 // transform twice. The values are dyadic so the composed result is exact.
@@ -333,47 +338,6 @@ func TestColorFuncTwoStagesUseDistinctContexts(t *testing.T) {
 	var out [1]colorcore.PMColor4f
 	p.ShadeSpan(0, 0, out[:])
 	colorNear(t, out[0], colorcore.PMColor4f{R: 0.375, G: 0.75, B: 0.75, A: 1}, 0, "two-color-func output")
-}
-
-// TestRecyclePipelineResetsNewCounters locks that RecyclePipeline resets the laneMask/blend/colorFunc/image-sampling
-// free-list counters (so a reused pipeline hands out fresh contexts) while retaining their storage.
-func TestRecyclePipelineResetsNewCounters(t *testing.T) {
-	p := borrowPipeline()
-	p.nextLaneMask()
-	p.nextBlendCtx()
-	p.nextScale1Ctx()
-	p.nextColorFuncCtx()
-	p.nextBlendShaderCtx()
-	p.nextGatherCtx()
-	p.nextSamplerCtx()
-	p.nextDecalCtx()
-	p.nextMorphologyCtx()
-	p.nextDisplacementCtx()
-	p.nextNormalCtx()
-	p.nextLightingCtx()
-	p.nextMatrixConvCtx()
-	p.nextArithmeticCtx()
-	if p.laneMaskN == 0 || p.blendCtxN == 0 || p.scale1CtxN == 0 || p.colorFuncCtxN == 0 || p.blendShaderCtxN == 0 ||
-		p.gatherCtxN == 0 || p.samplerCtxN == 0 || p.decalCtxN == 0 || p.morphCtxN == 0 || p.dispCtxN == 0 ||
-		p.normalCtxN == 0 || p.lightingCtxN == 0 || p.matConvCtxN == 0 || p.arithCtxN == 0 {
-		t.Fatal("expected the new free-list counters to be bumped")
-	}
-	RecyclePipeline(p)
-	if p.laneMaskN != 0 || p.blendCtxN != 0 || p.scale1CtxN != 0 || p.colorFuncCtxN != 0 || p.blendShaderCtxN != 0 ||
-		p.gatherCtxN != 0 || p.samplerCtxN != 0 || p.decalCtxN != 0 || p.morphCtxN != 0 || p.dispCtxN != 0 ||
-		p.normalCtxN != 0 || p.lightingCtxN != 0 || p.matConvCtxN != 0 || p.arithCtxN != 0 {
-		t.Fatalf("recycle left counters laneMaskN=%d blendCtxN=%d scale1CtxN=%d colorFuncCtxN=%d blendShaderCtxN=%d "+
-			"gatherCtxN=%d samplerCtxN=%d decalCtxN=%d morphCtxN=%d dispCtxN=%d normalCtxN=%d lightingCtxN=%d "+
-			"matConvCtxN=%d arithCtxN=%d", p.laneMaskN, p.blendCtxN, p.scale1CtxN, p.colorFuncCtxN, p.blendShaderCtxN,
-			p.gatherCtxN, p.samplerCtxN, p.decalCtxN, p.morphCtxN, p.dispCtxN, p.normalCtxN, p.lightingCtxN,
-			p.matConvCtxN, p.arithCtxN)
-	}
-	if len(p.laneMasks) == 0 || len(p.blendCtxs) == 0 || len(p.scale1Ctxs) == 0 || len(p.colorFuncCtxs) == 0 ||
-		len(p.blendShaderCtxs) == 0 || len(p.gatherCtxs) == 0 || len(p.samplerCtxs) == 0 || len(p.decalCtxs) == 0 ||
-		len(p.morphCtxs) == 0 || len(p.dispCtxs) == 0 || len(p.normalCtxs) == 0 || len(p.lightingCtxs) == 0 ||
-		len(p.matConvCtxs) == 0 || len(p.arithCtxs) == 0 {
-		t.Fatal("recycle dropped retained free-list storage")
-	}
 }
 
 // TestRecyclePipelineClearsRegisterFileCtx locks that RecyclePipeline drops the register file's stage-context pointer.

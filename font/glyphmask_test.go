@@ -125,6 +125,12 @@ func TestAllocGlyphImageHonorsImageSize(t *testing.T) {
 						t.Errorf("%s: allocated %d/%d/%d bytes/words for an image-less glyph", s.name, len(g.Image),
 							len(g.Image32), len(g.Image16))
 					}
+					if allocs := testing.AllocsPerRun(5, func() {
+						*g = Glyph{Width: s.w, Height: s.h, Format: f.format}
+						allocGlyphImage(g)
+					}); allocs != 0 {
+						t.Errorf("%s: %v allocations for an image-less glyph, want 0", s.name, allocs)
+					}
 					continue
 				}
 				// The allocated plane must hold exactly ImageSize bytes; the other two planes stay nil.
@@ -155,21 +161,6 @@ func TestAllocGlyphImageHonorsImageSize(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestAllocGlyphImageDoesNotAllocateForTooLargeGlyph is the memory half of the guard: a too-large glyph must cost no
-// allocation at all, in whichever plane its format would have used. A cap-width ARGB32 glyph is used because its
-// unguarded allocation is the largest of the four.
-func TestAllocGlyphImageDoesNotAllocateForTooLargeGlyph(t *testing.T) {
-	var g Glyph
-	for _, format := range []MaskFormat{MaskA8, MaskARGB32, MaskLCD16, MaskSDF} {
-		if allocs := testing.AllocsPerRun(5, func() {
-			g = Glyph{Width: maxGlyphWidth, Height: 4, Format: format}
-			allocGlyphImage(&g)
-		}); allocs != 0 {
-			t.Errorf("format %d: %v allocations for a too-large glyph, want 0", format, allocs)
-		}
 	}
 }
 

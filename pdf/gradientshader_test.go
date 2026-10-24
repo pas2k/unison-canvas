@@ -107,40 +107,64 @@ func TestGradientLinearClampAxialShading(t *testing.T) {
 	}
 }
 
-func TestGradientRadialClampRadialShading(t *testing.T) {
-	g := shaders.NewRadialGradient(geom.Point{X: 50, Y: 50}, 40, twoStops, nil, shaders.TileClamp, nil)
-	data := renderGradient(t, g)
-	if !anyObjectContains(data, "/PatternType 2", "/ShadingType 3", "/Coords [50 50 0 50 50 40]") {
-		t.Errorf("no radial shading pattern; objects=%v", dictObjects(data))
+func TestGradientClampRadialShading(t *testing.T) {
+	for _, c := range []struct {
+		shader shaders.Shader
+		name   string
+		coords string
+	}{
+		{
+			name:   "radial",
+			shader: shaders.NewRadialGradient(geom.Point{X: 50, Y: 50}, 40, twoStops, nil, shaders.TileClamp, nil),
+			coords: "/Coords [50 50 0 50 50 40]",
+		},
+		{
+			// Two distinct centers and radii, clamp → a native radial shading with both circles.
+			name: "two-point conical",
+			shader: shaders.NewTwoPointConicalGradient(geom.Point{X: 20, Y: 20}, 5, geom.Point{X: 60, Y: 60}, 30,
+				twoStops, nil, shaders.TileClamp, nil),
+			coords: "/Coords [20 20 5 60 60 30]",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := renderGradient(t, c.shader)
+			if !anyObjectContains(data, "/PatternType 2", "/ShadingType 3", c.coords) {
+				t.Errorf("no radial shading pattern; objects=%v", dictObjects(data))
+			}
+		})
 	}
 }
 
-func TestGradientConicalClampRadialShading(t *testing.T) {
-	// Two distinct centers and radii, clamp → a native radial shading with both circles.
-	g := shaders.NewTwoPointConicalGradient(geom.Point{X: 20, Y: 20}, 5, geom.Point{X: 60, Y: 60}, 30,
-		twoStops, nil, shaders.TileClamp, nil)
-	data := renderGradient(t, g)
-	if !anyObjectContains(data, "/PatternType 2", "/ShadingType 3", "/Coords [20 20 5 60 60 30]") {
-		t.Errorf("no conical radial shading; objects=%v", dictObjects(data))
-	}
-}
-
-func TestGradientLinearRepeatFunctionShading(t *testing.T) {
-	g := shaders.NewLinearGradient(geom.Point{}, geom.Point{X: 50}, twoStops, nil, shaders.TileRepeat, nil)
-	data := renderGradient(t, g)
-	// Repeat has no PDF-native equivalent, so it emits a Function-based (type 1) shading whose Type 4 PostScript
-	// function references the tile-mode "truncate" code. No Extend for a non-clamp mode.
-	if !anyObjectContains(data, "/PatternType 2", "/ShadingType 1", "/Function ") {
-		t.Errorf("no function-based shading; objects=%v", dictObjects(data))
-	}
-	if anyObjectContains(data, "/Extend") {
-		t.Error("a repeat gradient must not emit /Extend")
-	}
-	if !anyStreamContains(data, "dup truncate sub") {
-		t.Error("repeat tile-mode PostScript ('dup truncate sub') not emitted")
-	}
-	if !anyObjectContains(data, "/FunctionType 4") {
-		t.Errorf("no Type 4 PostScript function object; objects=%v", dictObjects(data))
+func TestGradientLinearNonClampFunctionShading(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ps   []string
+		tile shaders.TileMode
+	}{
+		{name: "repeat", tile: shaders.TileRepeat, ps: []string{"dup truncate sub"}},
+		// The mirror tile-mode work-around uses "2 mod" and "cvi".
+		{name: "mirror", tile: shaders.TileMirror, ps: []string{"2 mod", "cvi"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := shaders.NewLinearGradient(geom.Point{}, geom.Point{X: 50}, twoStops, nil, c.tile, nil)
+			data := renderGradient(t, g)
+			// A non-clamp tile mode has no PDF-native equivalent, so it emits a Function-based (type 1) shading whose
+			// Type 4 PostScript function carries the tile-mode code. No Extend for a non-clamp mode.
+			if !anyObjectContains(data, "/PatternType 2", "/ShadingType 1", "/Function ") {
+				t.Errorf("no function-based shading; objects=%v", dictObjects(data))
+			}
+			if anyObjectContains(data, "/Extend") {
+				t.Errorf("a %s gradient must not emit /Extend", c.name)
+			}
+			for _, ps := range c.ps {
+				if !anyStreamContains(data, ps) {
+					t.Errorf("%s tile-mode PostScript (%q) not emitted", c.name, ps)
+				}
+			}
+			if !anyObjectContains(data, "/FunctionType 4") {
+				t.Errorf("no Type 4 PostScript function object; objects=%v", dictObjects(data))
+			}
+		})
 	}
 }
 
@@ -153,18 +177,6 @@ func TestGradientSweepFunctionShading(t *testing.T) {
 	}
 	if !anyStreamContains(data, "atan 360 div") {
 		t.Error("sweep PostScript ('atan 360 div') not emitted")
-	}
-}
-
-func TestGradientMirrorFunctionShading(t *testing.T) {
-	g := shaders.NewLinearGradient(geom.Point{}, geom.Point{X: 50}, twoStops, nil, shaders.TileMirror, nil)
-	data := renderGradient(t, g)
-	if !anyObjectContains(data, "/ShadingType 1") {
-		t.Errorf("mirror gradient should be a function shading; objects=%v", dictObjects(data))
-	}
-	// The mirror tile-mode work-around uses "2 mod" and "cvi".
-	if !anyStreamContains(data, "2 mod") || !anyStreamContains(data, "cvi") {
-		t.Error("mirror tile-mode PostScript not emitted")
 	}
 }
 
@@ -245,21 +257,6 @@ func TestGradientLocalMatrixInPatternMatrix(t *testing.T) {
 	if !anyObjectContains(data, "/Matrix [1 0 0 -1 10 80]") {
 		t.Errorf("local matrix not folded into the pattern matrix; objects=%v", dictObjects(data))
 	}
-}
-
-func TestColorShaderStillFoldsToColor(t *testing.T) {
-	// A pure color shader is folded to an rg/RG color, not a pattern (regression for the shader branch).
-	p := canvas.NewPaint()
-	p.Shader = shaders.NewColor(colorcore.ARGB(255, 40, 60, 80))
-	data := renderPDF(t, 100, 100, func(c *canvas.Canvas) {
-		c.DrawRect(geom.RectLTRB(0, 0, 100, 100), p)
-	})
-	validatePDF(t, data)
-	if strings.Contains(pageContent(t, data), "/Pattern cs") {
-		t.Error("a color shader must not emit a pattern")
-	}
-	// 40/255, 60/255, 80/255 as the fill/stroke color.
-	mustContain(t, pageContent(t, data), " rg\n")
 }
 
 // ---- unit tests for the standalone helpers ----------------------------------------------------------

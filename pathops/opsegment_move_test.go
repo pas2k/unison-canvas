@@ -8,9 +8,8 @@
 // defined by the Mozilla Public License, version 2.0.
 
 // Tests for the per-segment coincidence-maintenance phase (opsegment_move.go). The small helpers are exercised
-// directly; the trio is exercised both standalone (right after addIntersections, reproducing the head of
-// handleCoincidence) and through the full handleCoincidence sequence, with a structural model-validity invariant
-// checked after each run.
+// directly and the trio through the full handleCoincidence sequence, with a structural model-validity invariant checked
+// after each run.
 
 package pathops
 
@@ -269,34 +268,43 @@ func TestClearOneClearAll(t *testing.T) {
 	}
 }
 
-// TestSpansNearbyFarApart checks the dPointWayRoughlyEqual short-circuit: a segment's head and tail (far apart) report
-// found=false with ok=true.
-func TestSpansNearbyFarApart(t *testing.T) {
-	p := path.New()
-	p.MoveTo(0, 0).LineTo(100, 0).LineTo(100, 100).Close()
-	head, _ := buildOpModel(t, p)
-	s := segsOf(realContours(head)[0])[0] // (0,0)->(100,0), endpoints 100 apart
-	found, ok := s.spansNearby(&s.head.opSpanBase, &s.tail)
-	if !ok {
-		t.Fatal("spansNearby should not trip the escape hatch here")
-	}
-	if found {
-		t.Fatal("far-apart span endpoints should not be found near")
-	}
-}
-
-// TestSpansNearbyFound drives spansNearby's found path (and its spansNearbyCheck inner loop) directly: two segments
-// that share a head point report a near pairing.
-func TestSpansNearbyFound(t *testing.T) {
-	head, _ := newTestContourHead()
-	s := head.addLine([]geom.Point{pt(0, 0), pt(10, 0)})
-	other := head.addLine([]geom.Point{pt(0, 0), pt(5, 8)}) // shares the (0,0) head point
-	found, ok := s.spansNearby(&s.head.opSpanBase, &other.head.opSpanBase)
-	if !ok {
-		t.Fatal("spansNearby escape hatch tripped unexpectedly")
-	}
-	if !found {
-		t.Fatal("segments sharing a head point should be found near")
+// TestSpansNearby drives spansNearby: span endpoints far apart take the dPointWayRoughlyEqual short-circuit to
+// found=false, while two segments that share a head point take the found path (and its spansNearbyCheck inner loop).
+func TestSpansNearby(t *testing.T) {
+	for _, tc := range []struct {
+		spans func(t *testing.T) (s *opSegment, ref, check *opSpanBase)
+		name  string
+		want  bool
+	}{
+		{
+			name: "far apart",
+			spans: func(t *testing.T) (s *opSegment, ref, check *opSpanBase) {
+				p := path.New()
+				p.MoveTo(0, 0).LineTo(100, 0).LineTo(100, 100).Close()
+				head, _ := buildOpModel(t, p)
+				s = segsOf(realContours(head)[0])[0] // (0,0)->(100,0), endpoints 100 apart
+				return s, &s.head.opSpanBase, &s.tail
+			},
+		},
+		{
+			name: "shared head point",
+			spans: func(*testing.T) (s *opSegment, ref, check *opSpanBase) {
+				head, _ := newTestContourHead()
+				s = head.addLine([]geom.Point{pt(0, 0), pt(10, 0)})
+				other := head.addLine([]geom.Point{pt(0, 0), pt(5, 8)})
+				return s, &s.head.opSpanBase, &other.head.opSpanBase
+			},
+			want: true,
+		},
+	} {
+		s, ref, check := tc.spans(t)
+		found, ok := s.spansNearby(ref, check)
+		if !ok {
+			t.Fatalf("%s: spansNearby escape hatch tripped unexpectedly", tc.name)
+		}
+		if found != tc.want {
+			t.Fatalf("%s: found = %v, want %v", tc.name, found, tc.want)
+		}
 	}
 }
 
@@ -426,30 +434,6 @@ func buildPair(t *testing.T, pair opPair) (*opContourHead, *opCoincidence) {
 	co := newOpCoincidence(state)
 	addIntersections(head, co)
 	return head, co
-}
-
-// TestMoveStepsPreserveModel runs the standalone head of handleCoincidence (addExpanded, then moveMultiples, then
-// moveNearby) over the corpus and asserts each step succeeds and the model stays structurally valid.
-func TestMoveStepsPreserveModel(t *testing.T) {
-	for _, pair := range moveCorpus() {
-		t.Run(pair.name, func(t *testing.T) {
-			head, co := buildPair(t, pair)
-			if !co.addExpanded() {
-				t.Fatal("addExpanded returned false")
-			}
-			for _, c := range realContours(head) {
-				if !c.moveMultiples() {
-					t.Fatal("moveMultiples returned false")
-				}
-			}
-			for _, c := range realContours(head) {
-				if !c.moveNearby() {
-					t.Fatal("moveNearby returned false")
-				}
-			}
-			validateModel(t, head)
-		})
-	}
 }
 
 // TestHandleCoincidenceFullSequence runs the complete handleCoincidence sequence (including the

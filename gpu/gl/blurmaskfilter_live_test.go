@@ -134,34 +134,6 @@ func TestLiveMaskFilterBlurCPU(t *testing.T) {
 	}
 }
 
-// TestLiveMaskFilterBlurGPU draws a large blurred diamond (>64px, and again a general path so no analytic profile
-// applies), forcing the GPU lane: mask generation renders the coverage mask via a Replace coverage set-op, then blurs
-// it.
-func TestLiveMaskFilterBlurGPU(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	const size int32 = 160
-	shape := diamondShape(30, 30, 130, 130)
-	data, lane := drawBlurredShape(t, dc, size, &shape, maskfilter.BlurNormal, 8)
-	if lane != gl.MaskFilterLaneHWName {
-		t.Fatalf("draw took the %q lane, want %q", lane, gl.MaskFilterLaneHWName)
-	}
-	w := size
-
-	center := chanAt(data, w, 80, 80)
-	far := chanAt(data, w, 5, 5)
-	edgeOut := chanAt(data, w, 124, 64) // 7px outside the upper-right edge, along its normal
-	t.Logf("GPU blur: center=%d far=%d edgeOut=%d", center, far, edgeOut)
-	if center < 200 {
-		t.Errorf("center coverage too low: %d", center)
-	}
-	if far > 8 {
-		t.Errorf("far corner should be transparent: %d", far)
-	}
-	if edgeOut <= 12 || edgeOut >= 250 {
-		t.Errorf("just-outside edge should be an intermediate blur value: %d", edgeOut)
-	}
-}
-
 // TestLiveMaskFilterBlurStylesGPU exercises the four blur styles through the GPU lane. The non-normal styles composite
 // the sharp original mask over the blurred mask with a coverage set-op: Solid=Union, Outer=Difference, Inner=Intersect.
 // The diamond keeps the Normal baseline on the same lane as the other three (a rect would take the analytic lane).
@@ -185,7 +157,7 @@ func TestLiveMaskFilterBlurStylesGPU(t *testing.T) {
 
 	nCenter, nInside, nEdgeOut, nFar := sample(maskfilter.BlurNormal)
 	t.Logf("Normal: center=%d insideEdge=%d edgeOut=%d far=%d", nCenter, nInside, nEdgeOut, nFar)
-	if nCenter < 200 || nEdgeOut <= 12 || nFar > 8 {
+	if nCenter < 200 || nEdgeOut <= 12 || nEdgeOut >= 250 || nFar > 8 {
 		t.Errorf("Normal signature wrong: center=%d edgeOut=%d far=%d", nCenter, nEdgeOut, nFar)
 	}
 

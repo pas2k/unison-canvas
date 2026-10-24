@@ -41,24 +41,35 @@ func TestAppendRectangle(t *testing.T) {
 	}
 }
 
-func TestEmitPathRectFastPath(t *testing.T) {
-	p := (&path.Path{}).AddRect(geom.RectLTRB(5, 6, 25, 36), geom.DirectionCW)
-	got := capture(func(s stream.WStream) {
-		emitPath(p, styleFill, true, s, 0.25)
-	})
-	if got != "5 6 20 30 re\n" {
-		t.Errorf("emitPath rect fast path = %q", got)
+func TestEmitPath(t *testing.T) {
+	cases := []struct {
+		path               *path.Path
+		name               string
+		want               string
+		style              paintStyle
+		consumeDegenerates bool
+	}{
+		{
+			name:               "rect fast path",
+			path:               (&path.Path{}).AddRect(geom.RectLTRB(5, 6, 25, 36), geom.DirectionCW),
+			style:              styleFill,
+			consumeDegenerates: true,
+			want:               "5 6 20 30 re\n",
+		},
+		{
+			name:  "lines",
+			path:  (&path.Path{}).MoveTo(1, 2).LineTo(3, 4).LineTo(5, 6),
+			style: styleStroke,
+			want:  "1 2 m\n3 4 l\n5 6 l\n",
+		},
 	}
-}
-
-func TestEmitPathLines(t *testing.T) {
-	p := (&path.Path{}).MoveTo(1, 2).LineTo(3, 4).LineTo(5, 6)
-	got := capture(func(s stream.WStream) {
-		emitPath(p, styleStroke, false, s, 0.25)
-	})
-	want := "1 2 m\n3 4 l\n5 6 l\n"
-	if got != want {
-		t.Errorf("emitPath lines = %q, want %q", got, want)
+	for _, c := range cases {
+		got := capture(func(s stream.WStream) {
+			emitPath(c.path, c.style, c.consumeDegenerates, s, 0.25)
+		})
+		if got != c.want {
+			t.Errorf("emitPath %s = %q, want %q", c.name, got, c.want)
+		}
 	}
 }
 

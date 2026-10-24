@@ -61,19 +61,20 @@ func pixAt(pm *raster.Pixmap, x, y int32) colorcore.Color {
 	return colorcore.ARGB(a, r, g, b)
 }
 
-// TestDrawAtlasBasic places the four tiles at translated positions with nearest sampling and checks each destination
-// shows its tile's color, with untouched background between sprites.
+// TestDrawAtlasBasic places the four tiles at translated positions, plus the red tile rotated 90 degrees, with nearest
+// sampling and checks each destination shows its tile's color, with untouched background between sprites.
 func TestDrawAtlasBasic(t *testing.T) {
 	pm := raster.NewPixmap(128, 64)
 	c := NewForPixmap(pm)
 	c.Clear(0xFF202020)
 
-	tex := atlasTileRects()
+	tex := append(atlasTileRects(), atlasTileRects()[0])
 	xforms := []geom.RSXform{
 		geom.MakeRSXform(1, 0, 4, 4),
 		geom.MakeRSXform(1, 0, 34, 4),
 		geom.MakeRSXform(1, 0, 64, 4),
 		geom.MakeRSXform(1, 0, 94, 4),
+		geom.MakeRSXform(0, 1, 40, 30), // 90-degree rotation: the quad covers [tx-h, tx] x [ty, ty+w]
 	}
 	c.DrawAtlas(testAtlas(), xforms, tex, nil, raster.BlendSrcOver,
 		shaders.SamplingOptions{}, nil, nil)
@@ -91,24 +92,10 @@ func TestDrawAtlasBasic(t *testing.T) {
 	if got := pixAt(pm, 8, 40); got != 0xFF202020 {
 		t.Errorf("below sprites = %08X, want background", uint32(got))
 	}
-}
-
-// TestDrawAtlasRotation places the red tile with a 90-degree rotation (scos=0, ssin=1): the quad covers [tx-h, tx] x
-// [ty, ty+w], so a sample inside that square must be red.
-func TestDrawAtlasRotation(t *testing.T) {
-	pm := raster.NewPixmap(64, 64)
-	c := NewForPixmap(pm)
-	c.Clear(0xFF202020)
-
-	tex := atlasTileRects()[:1]
-	xforms := []geom.RSXform{geom.MakeRSXform(0, 1, 40, 8)}
-	c.DrawAtlas(testAtlas(), xforms, tex, nil, raster.BlendSrcOver,
-		shaders.SamplingOptions{}, nil, nil)
-
-	if got := pixAt(pm, 32, 16); got != 0xFFFF0000 {
+	if got := pixAt(pm, 32, 38); got != 0xFFFF0000 {
 		t.Errorf("rotated sprite interior = %08X, want red", uint32(got))
 	}
-	if got := pixAt(pm, 48, 16); got != 0xFF202020 {
+	if got := pixAt(pm, 48, 38); got != 0xFF202020 {
 		t.Errorf("outside rotated sprite = %08X, want background", uint32(got))
 	}
 }

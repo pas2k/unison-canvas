@@ -352,31 +352,10 @@ func TestAAClipBlitterBlitMask(t *testing.T) {
 			}
 		}
 	}
-}
 
-// TestAAClipBlitterBlitMaskSkipsRunScratch: BlitMask merges each row into rowScratch/rowScratch16 and forwards a
-// one-row mask, never touching the runs/aa scanline scratch, so it must not call ensureRunsAndAA (upstream needs it
-// because its row mask points into that shared buffer). The lazy allocation must still happen for the blits that do use
-// it.
-func TestAAClipBlitterBlitMaskSkipsRunScratch(t *testing.T) {
-	var c AAClip
-	c.SetPath(path.New().AddCircle(48, 48, 30, geom.DirectionCW), geom.IRectLTRB(0, 0, aaGrid, aaGrid), true)
-
-	target := &Mask{
-		Image:    make([]uint8, aaGrid*aaGrid),
-		Bounds:   geom.IRectLTRB(0, 0, aaGrid, aaGrid),
-		RowBytes: aaGrid,
-	}
-	var b AAClipBlitter
-	b.Init(NewA8CoverageBlitter(target), &c)
-
-	src := FillPathToMask(path.New().AddOval(geom.RectLTRB(20.5, 15.25, 80.75, 70.5), geom.DirectionCW),
-		geom.IRectLTRB(0, 0, aaGrid, aaGrid), true)
-	clip := src.Bounds
-	if !clip.Intersect(c.Bounds()) {
-		t.Fatal("expected overlap")
-	}
-	b.BlitMask(src, clip)
+	// BlitMask merges each row into rowScratch/rowScratch16 and forwards a one-row mask, never touching the runs/aa
+	// scanline scratch, so it must not call ensureRunsAndAA (upstream needs it because its row mask points into that
+	// shared buffer).
 	if b.runs != nil || b.aa != nil {
 		t.Fatalf("BlitMask allocated the scanline scratch it never uses: runs=%d aa=%d", len(b.runs), len(b.aa))
 	}

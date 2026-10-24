@@ -10,7 +10,6 @@
 package pdf
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/richardwilkes/canvas/stream"
@@ -43,6 +42,11 @@ func TestUnionEmit(t *testing.T) {
 		{name: "name", u: unionName("Type"), want: "/Type"},
 		{name: "name-escaped-plain", u: unionNameEscaped("Helvetica"), want: "/Helvetica"},
 		{name: "name-escaped-special", u: unionNameEscaped("A B#C"), want: "/A#20B#23C"},
+		// Every byte outside '!'..'~' and the delimiter set is escaped as #XX (uppercase hex).
+		{
+			name: "name-escaped-delimiters", u: unionNameEscaped("Aa0 /%()<>[]{}#\t"),
+			want: "/Aa0#20#2F#25#28#29#3C#3E#5B#5D#7B#7D#23#09",
+		},
 		{name: "ref", u: unionRef(IndirectReference{value: 5}), want: "5 0 R"},
 	}
 	for _, c := range cases {
@@ -168,21 +172,6 @@ func TestDictEmit(t *testing.T) {
 	}
 	if got, wantEmpty := string(emitToBytes(NewDict())), "<<>>"; got != wantEmpty {
 		t.Errorf("empty dict = %q, want %q", got, wantEmpty)
-	}
-}
-
-func TestNameEscaping(t *testing.T) {
-	// Every byte outside '!'..'~' and the special set is escaped as #XX (uppercase hex).
-	s := stream.NewMemoryWStream()
-	writeNameEscaped(s, "Aa0 /%()<>[]{}#\t")
-	got := string(s.Bytes())
-	// space=20, /=2F, %=25, (=28, )=29, <=3C, >=3E, [=5B, ]=5D, {=7B, }=7D, #=23, tab=09
-	want := "Aa0#20#2F#25#28#29#3C#3E#5B#5D#7B#7D#23#09"
-	if got != want {
-		t.Errorf("writeNameEscaped = %q, want %q", got, want)
-	}
-	if !strings.HasPrefix(got, "Aa0") {
-		t.Error("printable prefix altered")
 	}
 }
 

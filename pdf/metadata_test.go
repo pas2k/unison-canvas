@@ -45,20 +45,24 @@ func TestMakeDocumentInformationDict(t *testing.T) {
 	md.Title = "My Title"
 	md.Author = "Jane"
 	md.Creation = sampleDateTime()
-	got := string(emitToBytes(MakeDocumentInformationDict(md)))
-	// Order is fixed: Title, Author, (Subject, Keywords, Creator skipped when empty), Producer, then dates.
-	want := "<</Title (My Title)\n/Author (Jane)\n/Producer (Skia/PDF m142)\n" +
-		"/CreationDate (D:20260706123045-08'00')>>"
-	if got != want {
-		t.Errorf("info dict =\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestMakeDocumentInformationDictEmpty(t *testing.T) {
-	// A zero Metadata has no fields set, so the info dict is empty.
-	md := Metadata{}
-	if got, want := string(emitToBytes(MakeDocumentInformationDict(&md))), "<<>>"; got != want {
-		t.Errorf("empty info dict = %q, want %q", got, want)
+	for _, c := range []struct {
+		md   *Metadata
+		name string
+		want string
+	}{
+		{
+			// Order is fixed: Title, Author, (Subject, Keywords, Creator skipped when empty), Producer, then dates.
+			name: "fields set",
+			md:   md,
+			want: "<</Title (My Title)\n/Author (Jane)\n/Producer (Skia/PDF m142)\n" +
+				"/CreationDate (D:20260706123045-08'00')>>",
+		},
+		// A zero Metadata has no fields set, so the info dict is empty.
+		{name: "zero metadata", md: &Metadata{}, want: "<<>>"},
+	} {
+		if got := string(emitToBytes(MakeDocumentInformationDict(c.md))); got != c.want {
+			t.Errorf("%s: info dict =\n%q\nwant\n%q", c.name, got, c.want)
+		}
 	}
 }
 

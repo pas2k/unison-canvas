@@ -114,40 +114,39 @@ func TestMakeSubRunsDirectMask(t *testing.T) {
 }
 
 func TestMakeSubRunsPathLane(t *testing.T) {
-	// 300px text exceeds the 256 direct-mask gate, so outline glyphs ride the path lane.
-	f := loadTestFont(t, "Roboto-Regular.ttf", 300)
-	list := runListForText(t, f, "A", geom.Pt(0, 300))
-	positionMatrix := geom.IdentityMatrix()
+	hairline := canvas.NewPaint()
+	hairline.Style = canvas.StyleStroke
+	hairline.StrokeWidth = 0
+	for _, tc := range []struct {
+		name   string
+		paint  *canvas.Paint
+		text   string
+		origin geom.Point
+		size   float32
+	}{
+		// 300px text exceeds the 256 direct-mask gate, so outline glyphs ride the path lane.
+		{"text above the direct-mask gate", fillPaint(), "A", geom.Pt(0, 300), 300},
+		// Hairline strokes bypass the atlas lanes entirely.
+		{"hairline stroke", hairline, "x", geom.Pt(0, 0), 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := loadTestFont(t, "Roboto-Regular.ttf", tc.size)
+			list := runListForText(t, f, tc.text, tc.origin)
+			positionMatrix := geom.IdentityMatrix()
 
-	container := MakeSubRuns(list, &positionMatrix, fillPaint(), nil, noSDFTControl())
-	if len(container.SubRuns()) != 1 {
-		t.Fatalf("subrun count = %d, want 1", len(container.SubRuns()))
-	}
-	if _, ok := container.SubRuns()[0].(*PathSubRun); !ok {
-		t.Fatalf("subrun type = %T, want PathSubRun", container.SubRuns()[0])
-	}
-	var scaled geom.Matrix
-	scaled.SetScale(4, 4)
-	if !container.CanReuse(&scaled) {
-		t.Error("path subruns must reuse under any matrix")
-	}
-}
-
-func TestMakeSubRunsHairlineSkipsDirect(t *testing.T) {
-	// Hairline strokes bypass the atlas lanes entirely.
-	f := loadTestFont(t, "Roboto-Regular.ttf", 16)
-	list := runListForText(t, f, "x", geom.Pt(0, 0))
-	positionMatrix := geom.IdentityMatrix()
-
-	paint := canvas.NewPaint()
-	paint.Style = canvas.StyleStroke
-	paint.StrokeWidth = 0
-	container := MakeSubRuns(list, &positionMatrix, paint, nil, noSDFTControl())
-	if len(container.SubRuns()) != 1 {
-		t.Fatalf("subrun count = %d, want 1", len(container.SubRuns()))
-	}
-	if _, ok := container.SubRuns()[0].(*PathSubRun); !ok {
-		t.Fatalf("subrun type = %T, want PathSubRun", container.SubRuns()[0])
+			container := MakeSubRuns(list, &positionMatrix, tc.paint, nil, noSDFTControl())
+			if len(container.SubRuns()) != 1 {
+				t.Fatalf("subrun count = %d, want 1", len(container.SubRuns()))
+			}
+			if _, ok := container.SubRuns()[0].(*PathSubRun); !ok {
+				t.Fatalf("subrun type = %T, want PathSubRun", container.SubRuns()[0])
+			}
+			var scaled geom.Matrix
+			scaled.SetScale(4, 4)
+			if !container.CanReuse(&scaled) {
+				t.Error("path subruns must reuse under any matrix")
+			}
+		})
 	}
 }
 
@@ -217,50 +216,64 @@ func TestMakeSubRunsPerspective(t *testing.T) {
 }
 
 func TestMakeSubRunsSDFTLane(t *testing.T) {
-	// 200px rotated text with SDFT enabled rides the distance-field lane.
-	f := loadTestFont(t, "Roboto-Regular.ttf", 200)
-	list := runListForText(t, f, "SDF", geom.Pt(0, 200))
-	var positionMatrix geom.Matrix
-	positionMatrix.SetRotate(30)
+	for _, tc := range []struct {
+		name    string
+		edging  font.Edging
+		wantLCD bool
+	}{
+		{"antialias", font.EdgingAntiAlias, false},
+		// An LCD-edged run keeps its useLCDText bit on the SDFT subrun (the LCD DF GP selector); the mask data itself
+		// stays A8.
+		{"subpixel antialias", font.EdgingSubpixelAntiAlias, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 200px rotated text with SDFT enabled rides the distance-field lane.
+			f := loadTestFont(t, "Roboto-Regular.ttf", 200)
+			f.SetEdging(tc.edging)
+			list := runListForText(t, f, "SDF", geom.Pt(0, 200))
+			var positionMatrix geom.Matrix
+			positionMatrix.SetRotate(30)
 
-	container := MakeSubRuns(list, &positionMatrix, fillPaint(), nil, sdftControl())
-	if len(container.SubRuns()) != 1 {
-		t.Fatalf("subrun count = %d, want 1", len(container.SubRuns()))
-	}
-	sdft, ok := container.SubRuns()[0].(*SDFTSubRun)
-	if !ok {
-		t.Fatalf("subrun type = %T, want SDFTSubRun", container.SubRuns()[0])
-	}
-	if sdft.MaskFormat() != gpu.MaskFormatA8 {
-		t.Errorf("mask format = %v, want A8", sdft.MaskFormat())
-	}
-	if sdft.GlyphSrcPadding() != font.DistanceFieldInset {
-		t.Errorf("padding = %d, want %d", sdft.GlyphSrcPadding(), font.DistanceFieldInset)
-	}
-	gp := sdft.GlyphParams()
-	if !gp.IsSDF || gp.IsLCD || !gp.IsAA {
-		t.Errorf("glyph params = %+v, want {IsSDF:true IsLCD:false IsAA:true}", gp)
-	}
-	needsTransform, rect := sdft.DeviceRectAndNeedsTransform(&positionMatrix)
-	if !needsTransform || rect.IsEmpty() {
-		t.Errorf("deviceRect: needsTransform=%v rect=%v", needsTransform, rect)
-	}
+			container := MakeSubRuns(list, &positionMatrix, fillPaint(), nil, sdftControl())
+			if len(container.SubRuns()) != 1 {
+				t.Fatalf("subrun count = %d, want 1", len(container.SubRuns()))
+			}
+			sdft, ok := container.SubRuns()[0].(*SDFTSubRun)
+			if !ok {
+				t.Fatalf("subrun type = %T, want SDFTSubRun", container.SubRuns()[0])
+			}
+			if sdft.MaskFormat() != gpu.MaskFormatA8 {
+				t.Errorf("mask format = %v, want A8", sdft.MaskFormat())
+			}
+			if sdft.GlyphSrcPadding() != font.DistanceFieldInset {
+				t.Errorf("padding = %d, want %d", sdft.GlyphSrcPadding(), font.DistanceFieldInset)
+			}
+			gp := sdft.GlyphParams()
+			if !gp.IsSDF || gp.IsLCD != tc.wantLCD || !gp.IsAA {
+				t.Errorf("glyph params = %+v, want {IsSDF:true IsLCD:%v IsAA:true}", gp, tc.wantLCD)
+			}
+			needsTransform, rect := sdft.DeviceRectAndNeedsTransform(&positionMatrix)
+			if !needsTransform || rect.IsEmpty() {
+				t.Errorf("deviceRect: needsTransform=%v rect=%v", needsTransform, rect)
+			}
 
-	// Reuse follows the SDFT matrix range: any rotation at the same scale reuses; scales inside the strike's range
-	// reuse; scales beyond it do not (200px text at 2x leaves any bucket).
-	var rotated geom.Matrix
-	rotated.SetRotate(-45)
-	if !container.CanReuse(&rotated) {
-		t.Error("rotation at the same scale must reuse the SDFT subrun")
-	}
-	var doubled geom.Matrix
-	doubled.SetScale(2, 2)
-	if container.CanReuse(&doubled) {
-		t.Error("scaling to 2x (400px) must leave the matrix range")
-	}
+			// Reuse follows the SDFT matrix range: any rotation at the same scale reuses; scales inside the strike's
+			// range reuse; scales beyond it do not (200px text at 2x leaves any bucket).
+			var rotated geom.Matrix
+			rotated.SetRotate(-45)
+			if !container.CanReuse(&rotated) {
+				t.Error("rotation at the same scale must reuse the SDFT subrun")
+			}
+			var doubled geom.Matrix
+			doubled.SetScale(2, 2)
+			if container.CanReuse(&doubled) {
+				t.Error("scaling to 2x (400px) must leave the matrix range")
+			}
 
-	if got := sdft.GlyphCount(); got != 3 {
-		t.Errorf("glyph count = %d, want 3", got)
+			if got := sdft.GlyphCount(); got != 3 {
+				t.Errorf("glyph count = %d, want 3", got)
+			}
+		})
 	}
 }
 
@@ -315,28 +328,6 @@ func TestMakeSubRunsSDFTSmallTextWithDIF(t *testing.T) {
 	doubled.SetScale(2, 2)
 	if sdft.CanReuse(&doubled) {
 		t.Error("2x scale must not reuse the small-bucket strike")
-	}
-}
-
-func TestMakeSubRunsSDFTLCDGlyphParams(t *testing.T) {
-	// An LCD-edged run keeps its useLCDText bit on the SDFT subrun (the LCD DF GP selector); the mask data itself stays
-	// A8.
-	f := loadTestFont(t, "Roboto-Regular.ttf", 200)
-	f.SetEdging(font.EdgingSubpixelAntiAlias)
-	list := runListForText(t, f, "L", geom.Pt(0, 200))
-	positionMatrix := geom.IdentityMatrix()
-
-	container := MakeSubRuns(list, &positionMatrix, fillPaint(), nil, sdftControl())
-	sdft, ok := container.SubRuns()[0].(*SDFTSubRun)
-	if !ok {
-		t.Fatalf("subrun type = %T, want SDFTSubRun", container.SubRuns()[0])
-	}
-	gp := sdft.GlyphParams()
-	if !gp.IsSDF || !gp.IsLCD || !gp.IsAA {
-		t.Errorf("glyph params = %+v, want {IsSDF:true IsLCD:true IsAA:true}", gp)
-	}
-	if sdft.MaskFormat() != gpu.MaskFormatA8 {
-		t.Errorf("mask format = %v, want A8", sdft.MaskFormat())
 	}
 }
 

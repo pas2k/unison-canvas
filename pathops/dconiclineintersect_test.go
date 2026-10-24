@@ -7,10 +7,9 @@
 // This Source Code Form is "Incompatible With Secondary Licenses", as
 // defined by the Mozilla Public License, version 2.0.
 
-// Tests for the conic/line intersection solver (TestPathOpsConicLineIntersection and
-// TestPathOpsConicLineIntersectionOneOff), plus a focused reduceConic classification test. The conic is built from the
-// double-precision test points directly (debugSet, no float32 rounding), while the reduceConic precondition narrows
-// those points back to float32.
+// Tests for the conic/line intersection solver (TestPathOpsConicLineIntersection), plus a focused reduceConic
+// classification test. The conic is built from the double-precision test points directly (debugSet, no float32
+// rounding), while the reduceConic precondition narrows those points back to float32.
 
 package pathops
 
@@ -70,35 +69,6 @@ var lineConicTests = []lineConicCase{
 		result:   1,
 		expected: [2]dPoint{{x: 25.6499996, y: 20.6499996}, {x: 0, y: 0}},
 	},
-}
-
-var conicLineOneOffs = []struct {
-	conic  [3]dPoint
-	weight float32
-	line   dLine
-}{
-	{
-		conic: cp3(30.6499996, 25.6499996, 30.6499996, 20.6499996, 25.6499996, 20.6499996), weight: 0.707107008,
-		line: dl(25.6499996, 20.6499996, 45.6500015, 20.6499996),
-	},
-}
-
-func TestPathOpsConicLineIntersectionOneOff(t *testing.T) {
-	for index, tc := range conicLineOneOffs {
-		var conic dConic
-		conic.debugSet(tc.conic, tc.weight)
-		in := newIntersections()
-		result, _ := doConicLineIntersect(in, conic, tc.line)
-		for inner := 0; inner < result; inner++ {
-			conicT := in.ts[0][inner]
-			conicXY := conic.ptAtT(conicT)
-			lineT := in.ts[1][inner]
-			lineXY := tc.line.ptAtT(lineT)
-			if !conicXY.approximatelyEqual(lineXY) {
-				t.Fatalf("oneOff %d: conic(%v)=%v != line(%v)=%v", index, conicT, conicXY, lineT, lineXY)
-			}
-		}
-	}
 }
 
 func TestPathOpsConicLineIntersection(t *testing.T) {

@@ -14,7 +14,10 @@
 
 package gl
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // newStubWithTargets builds a non-blocking stub render task with the given targets, setting the field directly (rather
 // than via addTarget) so the test needs no DrawingManager or ref-counting.
@@ -32,42 +35,33 @@ func llistOrder(l *taskLList) []RenderTask {
 	return out
 }
 
-// TestTaskClusterVisitMultiTargetClearsAllTargets verifies that visiting a task with more than one target clears the
-// cluster tail recorded for every one of its targets, not just the first.
-func TestTaskClusterVisitMultiTargetClearsAllTargets(t *testing.T) {
+// TestTaskClusterVisitBarrierClearsExactlyItsTargets verifies that visiting a task without exactly one target clears
+// the cluster tail recorded for every one of its targets, not just the first, and leaves other cluster tails alone.
+func TestTaskClusterVisitBarrierClearsExactlyItsTargets(t *testing.T) {
 	a := &SurfaceProxy{}
 	b := &SurfaceProxy{}
-
-	// Prime the cluster map so both a and b have a recorded cluster tail.
-	ta := newStubWithTargets(a)
-	tb := newStubWithTargets(b)
-	lastTaskMap := map[*SurfaceProxy]RenderTask{a: ta, b: tb}
-
-	barrier := newStubWithTargets(a, b) // two targets => full barrier for both a and b
-	var llist taskLList
-	if reordered := taskClusterVisit(barrier, &llist, lastTaskMap); reordered {
-		t.Errorf("multi-target barrier must not report reordering, got true")
-	}
-	if _, ok := lastTaskMap[a]; ok {
-		t.Errorf("first target's cluster tail was not cleared by the barrier")
-	}
-	if _, ok := lastTaskMap[b]; ok {
-		t.Errorf("second target's cluster tail was not cleared by the barrier (Target(0) was deleted instead of Target(j))")
-	}
-}
-
-// TestTaskClusterVisitZeroTargetIsSafe verifies the zero-target branch is well-behaved: the loop body never runs, so
-// the map is untouched and no reordering is reported.
-func TestTaskClusterVisitZeroTargetIsSafe(t *testing.T) {
-	a := &SurfaceProxy{}
-	lastTaskMap := map[*SurfaceProxy]RenderTask{a: newStubWithTargets(a)}
-	barrier := newStubWithTargets() // zero targets
-	var llist taskLList
-	if reordered := taskClusterVisit(barrier, &llist, lastTaskMap); reordered {
-		t.Errorf("zero-target barrier must not report reordering, got true")
-	}
-	if _, ok := lastTaskMap[a]; !ok {
-		t.Errorf("zero-target barrier must not touch unrelated cluster tails")
+	for _, tc := range []struct {
+		name    string
+		primed  []*SurfaceProxy // proxies given a recorded cluster tail before the visit
+		targets []*SurfaceProxy // the barrier's targets
+	}{
+		{name: "multi-target", primed: []*SurfaceProxy{a, b}, targets: []*SurfaceProxy{a, b}},
+		{name: "zero-target", primed: []*SurfaceProxy{a}},
+	} {
+		lastTaskMap := make(map[*SurfaceProxy]RenderTask)
+		for _, p := range tc.primed {
+			lastTaskMap[p] = newStubWithTargets(p)
+		}
+		var llist taskLList
+		if reordered := taskClusterVisit(newStubWithTargets(tc.targets...), &llist, lastTaskMap); reordered {
+			t.Errorf("%s: barrier must not report reordering, got true", tc.name)
+		}
+		for i, p := range tc.primed {
+			_, ok := lastTaskMap[p]
+			if isTarget := slices.Contains(tc.targets, p); ok == isTarget {
+				t.Errorf("%s: primed proxy %d's cluster tail present = %v, want %v", tc.name, i, ok, !isTarget)
+			}
+		}
 	}
 }
 

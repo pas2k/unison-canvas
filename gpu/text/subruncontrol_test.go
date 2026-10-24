@@ -22,28 +22,47 @@ import (
 	"github.com/richardwilkes/canvas/maskfilter"
 )
 
-func TestSubRunControlIsSDFTBoundaries(t *testing.T) {
-	c := NewSubRunControl(true, false, true, 18, 324, false)
+func TestSubRunControlSizeBoundaries(t *testing.T) {
 	identity := geom.IdentityMatrix()
 	p := canvas.NewPaint()
 
-	// useSDFTForSmallText=false raises the min to largeDFFontLimit (162).
-	cases := []struct {
-		size float32
-		want bool
+	// useSDFTForSmallText=false raises the SDFT min to largeDFFontLimit (162). The per-OS GlyphsAsPathsFontSize
+	// defaults (mac 256, linux/windows 324) are pinned explicitly so every GOOS checks every variant.
+	max324 := NewSubRunControl(true, false, true, 18, 324, false)
+	max256 := NewSubRunControl(true, false, true, 18, 256, false)
+	// ableToUseSDFT=false disables the SDFT lane entirely.
+	off := NewSubRunControl(false, false, true, 18, 324, false)
+	for _, tc := range []struct {
+		c          *SubRunControl
+		name       string
+		size       float32
+		wantSDFT   bool
+		wantDirect bool
 	}{
-		{size: 0, want: false},
-		{size: 17, want: false},
-		{size: 18, want: false}, // below the raised min
-		{size: 161.9, want: false},
-		{size: 162, want: true}, // minDistanceFieldFontSize <= size
-		{size: 200, want: true},
-		{size: 324, want: true}, // size <= maxDistanceFieldFontSize
-		{size: 324.1, want: false},
-	}
-	for _, tc := range cases {
-		if got := c.IsSDFT(tc.size, p, &identity); got != tc.want {
-			t.Errorf("isSDFT(%v) = %v, want %v", tc.size, got, tc.want)
+		{&max324, "max 324", 0, false, false},
+		{&max324, "max 324", 16, false, true},
+		{&max324, "max 324", 17, false, true},
+		{&max324, "max 324", 18, false, true},    // below the raised SDFT min
+		{&max324, "max 324", 161.9, false, true}, // below the SDFT min: direct
+		{&max324, "max 324", 162, true, false},   // minDistanceFieldFontSize <= size: SDFT window starts
+		{&max324, "max 324", 200, true, false},
+		{&max324, "max 324", 255.9, true, false},
+		{&max324, "max 324", 256, true, false}, // font.SideTooBigForAtlas ends direct
+		{&max324, "max 324", 324, true, false}, // size <= maxDistanceFieldFontSize
+		{&max324, "max 324", 324.1, false, false},
+		{&max324, "max 324", 400, false, false},
+		// 300px device text is path-lane (neither SDFT nor direct) under the mac threshold and SDFT under the others.
+		{&max256, "max 256", 300, false, false},
+		{&max324, "max 324", 300, true, false},
+		// Without SDFT, direct extends to the atlas gate.
+		{&off, "SDFT off", 200, false, true},
+		{&off, "SDFT off", 256, false, false},
+	} {
+		if got := tc.c.IsSDFT(tc.size, p, &identity); got != tc.wantSDFT {
+			t.Errorf("%s: isSDFT(%v) = %v, want %v", tc.name, tc.size, got, tc.wantSDFT)
+		}
+		if got := tc.c.IsDirect(tc.size, p, &identity); got != tc.wantDirect {
+			t.Errorf("%s: isDirect(%v) = %v, want %v", tc.name, tc.size, got, tc.wantDirect)
 		}
 	}
 
@@ -51,35 +70,6 @@ func TestSubRunControlIsSDFTBoundaries(t *testing.T) {
 	small := NewSubRunControl(true, true, true, 18, 324, false)
 	if !small.IsSDFT(18, p, &identity) || small.IsSDFT(17.9, p, &identity) {
 		t.Error("small-text SDFT must gate at the configured min (18)")
-	}
-
-	// ableToUseSDFT=false disables the lane entirely.
-	off := NewSubRunControl(false, false, true, 18, 324, false)
-	if off.IsSDFT(200, p, &identity) {
-		t.Error("isSDFT must be false when the caps cannot use SDFT")
-	}
-}
-
-func TestSubRunControlPerOSMaxSizeBoundary(t *testing.T) {
-	// The per-OS GlyphsAsPathsFontSize defaults (mac 256, linux/windows 324) pinned explicitly so every GOOS checks
-	// every variant: 300px device text is path-lane (neither SDFT nor direct) under the mac threshold and SDFT under
-	// the others.
-	identity := geom.IdentityMatrix()
-	p := canvas.NewPaint()
-	for _, tc := range []struct {
-		maxSize  float32
-		wantSDFT bool
-	}{
-		{maxSize: 256, wantSDFT: false},
-		{maxSize: 324, wantSDFT: true},
-	} {
-		c := NewSubRunControl(true, false, true, 18, tc.maxSize, false)
-		if got := c.IsSDFT(300, p, &identity); got != tc.wantSDFT {
-			t.Errorf("max %v: isSDFT(300) = %v, want %v", tc.maxSize, got, tc.wantSDFT)
-		}
-		if c.IsDirect(300, p, &identity) {
-			t.Errorf("max %v: isDirect(300) must be false (>= kSkSideTooBigForAtlas)", tc.maxSize)
-		}
 	}
 }
 
@@ -125,36 +115,6 @@ func TestSubRunControlIsSDFTPerspective(t *testing.T) {
 	}
 	if c.IsDirect(30, p, &persp) {
 		t.Error("isDirect must reject perspective")
-	}
-}
-
-func TestSubRunControlIsDirect(t *testing.T) {
-	c := NewSubRunControl(true, false, true, 18, 324, false)
-	identity := geom.IdentityMatrix()
-	p := canvas.NewPaint()
-
-	cases := []struct {
-		size float32
-		want bool
-	}{
-		{size: 0, want: false},
-		{size: 16, want: true},
-		{size: 161.9, want: true},  // below the SDFT min: direct
-		{size: 162, want: false},   // SDFT window starts
-		{size: 255.9, want: false}, // still SDFT
-		{size: 256, want: false},   // font.SideTooBigForAtlas
-		{size: 400, want: false},
-	}
-	for _, tc := range cases {
-		if got := c.IsDirect(tc.size, p, &identity); got != tc.want {
-			t.Errorf("isDirect(%v) = %v, want %v", tc.size, got, tc.want)
-		}
-	}
-
-	// With SDFT unavailable, direct extends to the atlas gate.
-	off := NewSubRunControl(false, false, true, 18, 324, false)
-	if !off.IsDirect(200, p, &identity) || off.IsDirect(256, p, &identity) {
-		t.Error("without SDFT, direct must cover (0, 256)")
 	}
 }
 

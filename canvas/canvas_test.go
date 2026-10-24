@@ -210,26 +210,6 @@ func TestCanvasInverseFillDegenerateBoundsDrawsPaint(t *testing.T) {
 	}
 }
 
-func TestCanvasStrokeStyleDrawsRing(t *testing.T) {
-	// The stroker converts a stroked circle to a filled annulus: pixels on the circle's radius are covered; the center
-	// and the far corner are not.
-	c, pix := newWhiteCanvas()
-	paint := solidPaint(0xFF000000, true)
-	paint.Style = StyleStroke
-	paint.StrokeWidth = 4
-	c.DrawPath(path.New().AddCircle(50, 50, 30, geom.DirectionCW), paint)
-	rowPixels := int(pix.RowPixels)
-	if pix.Pix[50*rowPixels+80] == 0xFFFFFFFF { // (80, 50): on the radius
-		t.Fatal("stroke ring pixel not drawn")
-	}
-	if pix.Pix[50*rowPixels+50] != 0xFFFFFFFF { // center: inside the hole
-		t.Fatal("annulus hole was filled")
-	}
-	if pix.Pix[5*rowPixels+5] != 0xFFFFFFFF { // far corner
-		t.Fatal("pixel far outside the ring was drawn")
-	}
-}
-
 func TestCanvasLocalClipBounds(t *testing.T) {
 	c, _ := newWhiteCanvas()
 	c.Translate(10, 10)
@@ -239,5 +219,15 @@ func TestCanvasLocalClipBounds(t *testing.T) {
 	want := geom.RectLTRB(-1, -1, 51, 41)
 	if lb != want {
 		t.Fatalf("local clip bounds got %v want %v", lb, want)
+	}
+
+	// Intersecting with a rect off the device leaves an empty clip, and the local bounds collapse to the zero rect.
+	c, _ = newWhiteCanvas()
+	if b := c.LocalClipBounds(); b.IsEmpty() {
+		t.Fatalf("fresh canvas local clip bounds %v should not be empty", b)
+	}
+	c.ClipRect(geom.RectLTRB(cvW+50, cvH+50, cvW+60, cvH+60), raster.ClipIntersect, false)
+	if b := c.LocalClipBounds(); b != (geom.Rect{}) {
+		t.Errorf("empty clip local bounds = %v, want the zero rect", b)
 	}
 }

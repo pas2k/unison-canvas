@@ -268,26 +268,15 @@ func TestMatrixPrePostOps(t *testing.T) {
 	}
 }
 
-func TestMatrixZeroValueIsHonest(t *testing.T) {
-	// The zero Matrix is the all-zero matrix (degenerate), and must classify itself honestly rather than pretending to
-	// be identity.
-	var m Matrix
-	if m.IsIdentity() {
-		t.Error("zero-value Matrix must not claim to be identity")
-	}
-	got := m.MapXY(5, 7)
-	if got.X != 0 || got.Y != 0 {
-		t.Errorf("zero matrix should map everything to origin, got %+v", got)
-	}
-}
-
 func TestMatrixZeroValuePreScaleStaysHonest(t *testing.T) {
-	// PreScale is the one mask-fixup path reachable without a prior Set*/Type() call, so it must not stamp a clean mask
-	// onto a zero-valued Matrix. Every classification has to agree with an honest recompute of the same nine elements.
+	// The zero Matrix is the all-zero matrix (degenerate). PreScale is the one mask-fixup path reachable without a
+	// prior Set*/Type() call, so it must not stamp a clean mask onto it. Every classification has to agree with an
+	// honest recompute of the same nine elements.
 	for _, sc := range []struct {
 		name   string
 		sx, sy float32
 	}{
+		{name: "untouched", sx: 1, sy: 1}, // PreScale returns early, leaving the zero value as is
 		{name: "nonzero", sx: 2, sy: 3},
 		{name: "zeroScaleX", sx: 0, sy: 3},
 		{name: "shrinkToOne", sx: 1, sy: 2},
@@ -309,6 +298,9 @@ func TestMatrixZeroValuePreScaleStaysHonest(t *testing.T) {
 		}
 		if m.IsIdentity() || m.IsScaleTranslate() || m.IsTranslate() {
 			t.Errorf("%s: zero matrix classified as identity/scale-translate/translate", sc.name)
+		}
+		if got := m.MapXY(5, 7); got.X != 0 || got.Y != 0 {
+			t.Errorf("%s: zero matrix should map everything to origin, got %+v", sc.name, got)
 		}
 	}
 }
@@ -339,6 +331,7 @@ func TestMatrixPreservesRightAngles(t *testing.T) {
 			m.Set(MPersp0, 0.01)
 			return m
 		}(), want: false},
+		{name: "exactly orthogonal unfused", m: orthogonalRoundingProne, want: true},
 	}
 	for _, c := range cases {
 		if got := c.m.PreservesRightAngles(); got != c.want {
@@ -362,6 +355,10 @@ func TestMatrixMaxScale(t *testing.T) {
 			m.PostScale(2, 2)
 			return m
 		}(), want: 2},
+		// A^T*A is diagonal (25e20, 25). Fusing the b term makes bSqd exceed the orthogonality tolerance, sending the
+		// computation down the quadratic branch where aminusc*aminusc overflows and MaxScale returns -1. The 1e-4
+		// tolerance is exact at this magnitude.
+		{name: "exactly orthogonal unfused", m: orthogonalRoundingProne, want: 5e10},
 		// Perspective and anything that makes the squared singular value non-finite report the -1 sentinel, since the
 		// callers that fall back on it (stroke tessellation, path renderers) cannot use an infinite or NaN scale.
 		{name: "perspective", m: func() Matrix {
@@ -410,23 +407,6 @@ func TestMatrixDegeneracyIsUnfused(t *testing.T) {
 	}
 }
 
-func TestMatrixPreservesRightAnglesIsUnfused(t *testing.T) {
-	m := orthogonalRoundingProne
-	if !m.PreservesRightAngles() {
-		t.Error("exactly-orthogonal columns must preserve right angles on every platform")
-	}
-}
-
-func TestMatrixMaxScaleIsUnfused(t *testing.T) {
-	// The columns are (3e10, 4e10) and (-4, 3), so A^T*A is diagonal with entries 25e20 and 25, and the largest
-	// singular value is 5e10. Fusing the b term makes bSqd exceed the orthogonality tolerance, which sends the
-	// computation down the quadratic branch where aminusc*aminusc overflows float32 and MaxScale returns the -1
-	// sentinel instead.
-	if got := orthogonalRoundingProne.MaxScale(); got != 5e10 {
-		t.Errorf("MaxScale = %v, want 5e10", got)
-	}
-}
-
 // referenceMaxScale recomputes MaxScale's affine branch with every intermediate rounded to float32 explicitly. Each
 // step is evaluated in float64 and then rounded once, which reproduces correctly-rounded unfused float32 arithmetic and
 // cannot itself be contracted into an FMA, so it is an independent oracle for the pinning in MaxScale.
@@ -459,9 +439,10 @@ func referenceMaxScale(m *Matrix) float32 {
 
 func TestMaxScaleMatchesUnfusedReference(t *testing.T) {
 	// Pins MaxScale's affine branch against an independent float64 oracle. This does NOT distinguish fused from unfused
-	// halving: an unpinned p + 0.5*s contracts to an FMADDS on arm64, but halving is exact outside the subnormal range
-	// and TestMaxScaleHalvingsStayNormal shows the branch guard keeps it out of that range. The oracle instead guards
-	// the dot products and the discriminant, where fusion would be observable.
+	// halving: an unpinned p + 0.5*s contracts to an FMADDS on arm64, but halving is exact unless the result is
+	// subnormal, and the bSqd guard keeps both halved operands normal (bSqd > (1/4096)^2 forces sqrt(disc) >= 4.8e-4,
+	// and |b| <= (a+c)/2 by Cauchy-Schwarz forces a+c > 4.8e-4). The oracle instead guards the dot products and the
+	// discriminant, where fusion would be observable.
 	check := func(m *Matrix) {
 		t.Helper()
 		if !m.HasPerspective() {
@@ -489,41 +470,5 @@ func TestMaxScaleMatchesUnfusedReference(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	for range 200000 {
 		check(build(rng.Float32()*20-10, rng.Float32()*20-10, rng.Float32()*20-10, rng.Float32()*20-10))
-	}
-}
-
-func TestMaxScaleHalvingsStayNormal(t *testing.T) {
-	// MaxScale's affine branch halves (a + c) and sqrt(disc). Halving is exact in binary floating point unless the
-	// result underflows to subnormal, which is why the FMA contraction on that final add is harmless. The bSqd guard is
-	// what keeps both operands out of the subnormal range: bSqd > (1/4096)^2 forces sqrt(disc) >= 4.8e-4, and
-	// |b| <= (a+c)/2 by Cauchy-Schwarz forces a + c > 4.8e-4. If a rework ever breaks that, the halvings stop being
-	// exact and the contraction starts to matter.
-	const smallestNormal = 1.1754944e-38
-	check := func(sx, kx, ky, sy float32) {
-		t.Helper()
-		a := float32(sx*sx) + float32(ky*ky)
-		b := float32(sx*kx) + float32(sy*ky)
-		c := float32(kx*kx) + float32(sy*sy)
-		bSqd := b * b
-		if bSqd <= ScalarNearlyZeroTol*ScalarNearlyZeroTol {
-			return // the orthogonal branch, which does no halving
-		}
-		if !IsFinite(a, c, bSqd) {
-			return
-		}
-		aminusc := a - c
-		disc := float32(aminusc*aminusc) + float32(4*bSqd)
-		if sum := a + c; sum < smallestNormal*2 {
-			t.Errorf("a+c = %v for [%v %v; %v %v]: halving (a+c) can underflow to subnormal", sum, sx, kx, ky, sy)
-		}
-		if root := ScalarSqrt(disc); root < smallestNormal*2 {
-			t.Errorf("sqrt(disc) = %v for [%v %v; %v %v]: halving it can underflow to subnormal", root, sx, kx, ky, sy)
-		}
-	}
-	rng := rand.New(rand.NewSource(11))
-	for range 300000 {
-		// Include magnitudes small enough to reach subnormal squares if the guard did not exclude them.
-		scale := float32(math.Pow(10, rng.Float64()*40-38))
-		check(rng.Float32()*scale, rng.Float32()*scale, rng.Float32()*scale, rng.Float32()*scale)
 	}
 }

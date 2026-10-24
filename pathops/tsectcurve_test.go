@@ -107,8 +107,6 @@ func conicOneOff(t *testing.T, outer, inner int) {
 	assertValidTouch(t, in, c1, c2, true, sprintfPair("conicConic", outer, inner))
 }
 
-func TestPathOpsConicIntersectionOneOff(t *testing.T) { conicOneOff(t, 0, 1) }
-
 func TestPathOpsConicIntersection(t *testing.T) {
 	for outer := 0; outer < len(conicIntersectTestSet)-1; outer++ {
 		for inner := outer + 1; inner < len(conicIntersectTestSet); inner++ {
@@ -302,14 +300,6 @@ var cubicCoinSet = [][4]dPoint{
 	cu4(317, 711, 322.52285766601562, 711, 327, 715.4771728515625, 327, 721),
 	cu4(324.07107543945312, 713.928955078125, 324.4051513671875, 714.26300048828125,
 		324.71566772460937, 714.62060546875, 325, 714.9990234375),
-}
-
-func TestPathOpsCubicIntersectionOneOff(t *testing.T) {
-	cubicOneOff(t, cubicIntersectTestSet[0], cubicIntersectTestSet[1], false, "cubicOneOff[0,1]")
-}
-
-func TestPathOpsCubicCoinOneOff(t *testing.T) {
-	cubicOneOff(t, cubicCoinSet[0], cubicCoinSet[1], true, "cubicCoin[0,1]")
 }
 
 func TestPathOpsCubicIntersection(t *testing.T) {

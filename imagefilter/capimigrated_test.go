@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"github.com/richardwilkes/canvas/geom"
-	"github.com/richardwilkes/canvas/imagecore"
 	"github.com/richardwilkes/canvas/imagefilter"
 	"github.com/richardwilkes/canvas/shaders"
 )
@@ -35,19 +34,6 @@ func TestBlurConstructorGuards(t *testing.T) {
 	}
 	if f := imagefilter.Blur(2, 2, shaders.TileClamp, nil, nil); f == nil {
 		t.Error("clamp-tile blur without a crop rect (the legacy lane): want non-nil")
-	}
-}
-
-// TestImageDefaultSourceBounds verifies ImageDefault yields a non-nil filter for a valid image and for a nil one (the
-// transparent-black Empty filter).
-func TestImageDefaultSourceBounds(t *testing.T) {
-	info, _ := imagecore.MakeInfo(8, 8, imagecore.ColorTypeRGBA8888, imagecore.AlphaTypePremul)
-	img := imagecore.FromPixels(imagecore.NewPixels(info))
-	if f := imagefilter.ImageDefault(img, shaders.SamplingOptions{}); f == nil {
-		t.Error("image source (default) with a valid image: want non-nil")
-	}
-	if f := imagefilter.ImageDefault(nil, shaders.SamplingOptions{}); f == nil {
-		t.Error("image source (default) with nil image: want non-nil Empty filter")
 	}
 }
 

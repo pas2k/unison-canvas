@@ -22,67 +22,56 @@ func aaFillInto(dev *Pixmap, p *path.Path, w, h int32) {
 	AntiFillPath(p, geom.IRectLTRB(0, 0, w, h), NewSolidBlitter(dev, colorcore.Color(0xFF000000)))
 }
 
-// TestAAFillDisjointContourAggregation pins that appending disjoint contours into one path and filling it once totals
-// the same coverage as filling each of them on its own. Disjoint geometry cannot interact in a scan converter that
-// resolves exact per-pixel area: whichever contour a pixel's coverage comes from, the area is the same, and the
-// nonzero winding rule sums windings that never overlap. Both arms are measured against the analytic area the contours
-// enclose (pathEnclosedArea, computed in float64 without touching the rasterizer), so the test says which arm is wrong
-// rather than only that the two disagree.
+// TestAAFillMergedMatchesSeparateInk pins that appending disjoint contours into one path and filling it once lays down
+// the same ink as filling each of them on its own. Disjoint geometry cannot interact in a scan converter that resolves
+// exact per-pixel area: whichever contour a pixel's coverage comes from, the area is the same, and the nonzero winding
+// rule sums windings that never overlap. This is the form a text renderer actually feels: the contours are laid out at
+// 4 px pitch with staggered sub-pixel offsets in both axes, like glyphs on a line of text, and swept over further
+// offsets so no single lucky alignment can carry it. The divergence being *signed* is the point — the defect this
+// guards was a one-directional loss that grew with the number of contours, not the symmetric jitter of two different
+// but equally valid roundings.
 //
-// The contours are laid out at 4 px pitch with staggered sub-pixel offsets in both axes — glyphs on a line of text,
-// which is where this shows up in practice.
-func TestAAFillDisjointContourAggregation(t *testing.T) {
-	const h int32 = 16
-	for _, n := range []int32{1, 2, 4, 8, 16, 32} {
-		w := n*4 + 8
-		merged := NewPixmap(w, h)
-		separate := NewPixmap(w, h)
-		all := path.New()
-		var exact float64
-		for i := range n {
-			c := tinyGlyphContour(2+float32(i)*4+float32(i%3)/4, 4+float32(i%5)/5)
-			exact += pathEnclosedArea(c, 1<<14) * 255
-			all.AddPath(c, path.AddPathAppend)
-			aaFillInto(separate, c, w, h)
-		}
-		aaFillInto(merged, all, w, h)
-		mergedPct := 100 * (float64(sumAlpha(merged, w, h)) - exact) / exact
-		separatePct := 100 * (float64(sumAlpha(separate, w, h)) - exact) / exact
-		// v0.2.1 held both arms inside 2.5% at every count; 5% leaves room for the converter's own edge rounding
-		// without admitting a real coverage loss.
-		if mergedPct < -5 || mergedPct > 5 {
-			t.Errorf("%d contours merged into one path total %+.2f%% of the enclosed area (filled separately: %+.2f%%)",
-				n, mergedPct, separatePct)
-		}
-		if separatePct < -5 || separatePct > 5 {
-			t.Errorf("%d contours filled separately total %+.2f%% of the enclosed area", n, separatePct)
-		}
-	}
-}
-
-// TestAAFillMergedMatchesSeparateInk is the same invariant measured against the other arm rather than against the
-// enclosed area, and swept over sub-pixel offsets in both axes so no single lucky alignment can carry it. It is the
-// form a text renderer actually feels: a run drawn per-glyph and the same run drawn as one appended path have to put
-// down the same ink, and the divergence being *signed* here is the point — the defect this guards was a one-directional
-// loss that grew with the number of contours, not the symmetric jitter of two different but equally valid roundings.
+// On the unshifted pass both arms are also measured against the analytic area the contours enclose (pathEnclosedArea,
+// computed in float64 without touching the rasterizer), so a failure says which arm is wrong rather than only that the
+// two disagree.
 func TestAAFillMergedMatchesSeparateInk(t *testing.T) {
 	const h int32 = 16
-	for _, n := range []int32{2, 4, 8, 16, 32} {
+	for _, n := range []int32{1, 2, 4, 8, 16, 32} {
 		w := n*4 + 8
 		var divergence, ink int64
 		for _, ox := range []float32{0, 0.125, 0.3, 0.5, 0.7, 0.9} {
 			for _, oy := range []float32{0, 0.4, 0.8} {
+				unshifted := ox == 0 && oy == 0
 				merged := NewPixmap(w, h)
 				separate := NewPixmap(w, h)
 				all := path.New()
+				var exact float64
 				for i := range n {
 					c := tinyGlyphContour(2+float32(i)*4+float32(i%3)/4+ox, 4+float32(i%5)/5+oy)
+					if unshifted {
+						exact += pathEnclosedArea(c, 1<<14) * 255
+					}
 					all.AddPath(c, path.AddPathAppend)
 					aaFillInto(separate, c, w, h)
 				}
 				aaFillInto(merged, all, w, h)
-				divergence += sumAlpha(merged, w, h) - sumAlpha(separate, w, h)
-				ink += sumAlpha(separate, w, h)
+				mergedInk, separateInk := sumAlpha(merged, w, h), sumAlpha(separate, w, h)
+				divergence += mergedInk - separateInk
+				ink += separateInk
+				if !unshifted {
+					continue
+				}
+				mergedPct := 100 * (float64(mergedInk) - exact) / exact
+				separatePct := 100 * (float64(separateInk) - exact) / exact
+				// v0.2.1 held both arms inside 2.5% at every count; 5% leaves room for the converter's own edge
+				// rounding without admitting a real coverage loss.
+				if mergedPct < -5 || mergedPct > 5 {
+					t.Errorf("%d contours merged into one path total %+.2f%% of the enclosed area (filled separately: %+.2f%%)",
+						n, mergedPct, separatePct)
+				}
+				if separatePct < -5 || separatePct > 5 {
+					t.Errorf("%d contours filled separately total %+.2f%% of the enclosed area", n, separatePct)
+				}
 			}
 		}
 		// The two arms round differently at every edge pixel, so they will never agree exactly; 4% is well clear of

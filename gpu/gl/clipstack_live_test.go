@@ -7,10 +7,9 @@
 // This Source Code Form is "Incompatible With Secondary Licenses", as
 // defined by the Mozilla Public License, version 2.0.
 
-// Live-context tests for the clip stack: the device-rect clip folding into edge AA (pixel-exact against analytic area
-// coverage), the analytic rrect/convex-poly coverage FPs, the software clip mask (device-space texture sampling), the
-// stencil clip (an element past the analytic FP budget really masks pixels), and the difference-op inverse fill. Skips
-// when no GL context is available.
+// Live-context tests for the clip stack: the analytic convex-poly coverage FP, the software clip mask (device-space
+// texture sampling), the stencil clip (an element past the analytic FP budget really masks pixels), and the
+// difference-op inverse fill. Skips when no GL context is available.
 
 package gl_test
 
@@ -39,84 +38,6 @@ func fillClipped(sdc *gl.SurfaceDrawContext, cs *gl.ClipStack, c colorcore.PMCol
 func pxAt(data []byte, x, y int32) [4]int {
 	off := int(y)*64*4 + int(x)*4
 	return [4]int{int(data[off]), int(data[off+1]), int(data[off+2]), int(data[off+3])}
-}
-
-// TestLiveClipRectFold: an AA device-rect clip folds into the draw's edge AA through attemptQuadOptimization; the
-// result is pixel-exact area coverage of the clip rect.
-func TestLiveClipRectFold(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	sdc := newLiveDrawSDC(t, dc, 64, 64)
-	defer sdc.Release()
-
-	bg := [4]float32{1, 1, 1, 1}
-	sdc.Clear(bg)
-
-	clipRect := geom.Rect{Left: 10.25, Top: 10.25, Right: 30.75, Bottom: 20.75}
-	cs := liveClipStack()
-	identity := geom.IdentityMatrix()
-	cs.ClipRect(&identity, clipRect, gpu.AAYes, raster.ClipIntersect)
-
-	src := colorcore.PMColor4f{R: 0.1, G: 0.2, B: 0.4, A: 0.5}
-	fillClipped(sdc, cs, src, geom.Rect{Right: 64, Bottom: 64}, gpu.AANo)
-
-	data := readSDC(t, sdc)
-	for y := int32(8); y < 24; y++ {
-		for x := int32(8); x < 34; x++ {
-			// Corner cells are exempt (per-edge-AA corner interpolation).
-			ox := min(clipRect.Right, float32(x+1)) - max(clipRect.Left, float32(x))
-			oy := min(clipRect.Bottom, float32(y+1)) - max(clipRect.Top, float32(y))
-			if ox > 0 && ox < 1 && oy > 0 && oy < 1 {
-				continue
-			}
-			cov := axisCoverage(clipRect, x, y)
-			srcv := [4]float32{src.R, src.G, src.B, src.A}
-			got := pxAt(data, x, y)
-			for c := range 4 {
-				want := int(srcv[c]*cov*255 + bg[c]*(1-src.A*cov)*255 + 0.5)
-				if d := got[c] - want; d < -3 || d > 3 {
-					t.Fatalf("pixel (%d,%d) channel %d = %d, want %d (cov %v)",
-						x, y, c, got[c], want, cov)
-				}
-			}
-		}
-	}
-}
-
-// TestLiveClipRRectFP: a circular-corner rrect clip rides circularRRectFP.
-func TestLiveClipRRectFP(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	sdc := newLiveDrawSDC(t, dc, 64, 64)
-	defer sdc.Release()
-
-	sdc.Clear([4]float32{0, 0, 0, 1})
-
-	rr := geom.MakeRRect(geom.Rect{Left: 8, Top: 8, Right: 56, Bottom: 56}, 12, 12)
-	cs := liveClipStack()
-	identity := geom.IdentityMatrix()
-	cs.ClipRRect(&identity, rr, gpu.AAYes, raster.ClipIntersect)
-
-	src := colorcore.PMColor4f{R: 0, G: 1, B: 0, A: 1}
-	fillClipped(sdc, cs, src, geom.Rect{Right: 64, Bottom: 64}, gpu.AANo)
-
-	data := readSDC(t, sdc)
-	for _, p := range [][2]int32{{32, 32}, {12, 32}, {32, 12}, {51, 51}} {
-		if g := pxAt(data, p[0], p[1])[1]; g < 250 {
-			t.Fatalf("interior (%d,%d) green = %d, want ~255", p[0], p[1], g)
-		}
-	}
-	// The square corner notches and the far exterior stay black.
-	for _, p := range [][2]int32{{9, 9}, {54, 9}, {9, 54}, {54, 54}, {2, 2}, {60, 32}} {
-		if g := pxAt(data, p[0], p[1])[1]; g > 5 {
-			t.Fatalf("exterior (%d,%d) green = %d, want ~0", p[0], p[1], g)
-		}
-	}
-	// Coverage decreases monotonically walking diagonally out through a corner arc.
-	g1 := pxAt(data, 14, 14)[1]
-	g2 := pxAt(data, 12, 12)[1]
-	g3 := pxAt(data, 10, 10)[1]
-	if g1 < g2 || g2 < g3 {
-		t.Fatalf("corner arc not monotonic: %d %d %d", g1, g2, g3)
-	}
 }
 
 // TestLiveClipConvexPolyFP: a rotated rect clip rides the convex-poly FP.

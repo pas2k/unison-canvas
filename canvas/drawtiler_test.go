@@ -76,45 +76,46 @@ func TestDrawTilerNeedsTilingPredicates(t *testing.T) {
 	}
 }
 
-func TestDrawTilerWalkOrderHorizontal(t *testing.T) {
-	dev := NewBitmapDevice(raster.NewPixmap(20000, 16))
-	steps, tiled := walkTiles(t, dev, nil)
-	if !tiled {
-		t.Fatalf("expected tiling")
-	}
+func TestDrawTilerWalkOrder(t *testing.T) {
 	// The expected walk: x-major from srcBounds' top-left, stepping tilerMaxDim; seams at 8191 and 16382.
-	want := []tileStep{
-		{origin: geom.IPoint{X: 0, Y: 0}, w: 8191, h: 16},
-		{origin: geom.IPoint{X: 8191, Y: 0}, w: 8191, h: 16},
-		{origin: geom.IPoint{X: 16382, Y: 0}, w: 20000 - 16382, h: 16},
-	}
-	if len(steps) != len(want) {
-		t.Fatalf("got %d tiles, want %d: %+v", len(steps), len(want), steps)
-	}
-	for i, s := range steps {
-		if s != want[i] {
-			t.Errorf("tile %d: got %+v, want %+v", i, s, want[i])
+	for _, tc := range []struct {
+		name string
+		want []tileStep
+		w, h int32
+	}{
+		{
+			name: "horizontal",
+			w:    20000,
+			h:    16,
+			want: []tileStep{
+				{origin: geom.IPoint{X: 0, Y: 0}, w: 8191, h: 16},
+				{origin: geom.IPoint{X: 8191, Y: 0}, w: 8191, h: 16},
+				{origin: geom.IPoint{X: 16382, Y: 0}, w: 20000 - 16382, h: 16},
+			},
+		},
+		{
+			name: "vertical",
+			w:    16,
+			h:    20000,
+			want: []tileStep{
+				{origin: geom.IPoint{X: 0, Y: 0}, w: 16, h: 8191},
+				{origin: geom.IPoint{X: 0, Y: 8191}, w: 16, h: 8191},
+				{origin: geom.IPoint{X: 0, Y: 16382}, w: 16, h: 20000 - 16382},
+			},
+		},
+	} {
+		dev := NewBitmapDevice(raster.NewPixmap(tc.w, tc.h))
+		steps, tiled := walkTiles(t, dev, nil)
+		if !tiled {
+			t.Fatalf("%s: expected tiling", tc.name)
 		}
-	}
-}
-
-func TestDrawTilerWalkOrderVertical(t *testing.T) {
-	dev := NewBitmapDevice(raster.NewPixmap(16, 20000))
-	steps, tiled := walkTiles(t, dev, nil)
-	if !tiled {
-		t.Fatalf("expected tiling")
-	}
-	want := []tileStep{
-		{origin: geom.IPoint{X: 0, Y: 0}, w: 16, h: 8191},
-		{origin: geom.IPoint{X: 0, Y: 8191}, w: 16, h: 8191},
-		{origin: geom.IPoint{X: 0, Y: 16382}, w: 16, h: 20000 - 16382},
-	}
-	if len(steps) != len(want) {
-		t.Fatalf("got %d tiles, want %d: %+v", len(steps), len(want), steps)
-	}
-	for i, s := range steps {
-		if s != want[i] {
-			t.Errorf("tile %d: got %+v, want %+v", i, s, want[i])
+		if len(steps) != len(tc.want) {
+			t.Fatalf("%s: got %d tiles, want %d: %+v", tc.name, len(steps), len(tc.want), steps)
+		}
+		for i, s := range steps {
+			if s != tc.want[i] {
+				t.Errorf("%s: tile %d: got %+v, want %+v", tc.name, i, s, tc.want[i])
+			}
 		}
 	}
 }

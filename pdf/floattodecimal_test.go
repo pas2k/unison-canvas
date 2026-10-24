@@ -44,6 +44,10 @@ func TestFloatToDecimalKnown(t *testing.T) {
 		{in: 72, want: "72"},
 		{in: 612, want: "612"},
 		{in: 792, want: "792"},
+		{in: float32(math.NaN()), want: "0"},
+		// ±Inf serializes as the nearest finite float, ±FLT_MAX.
+		{in: float32(math.Inf(1)), want: "340282350000000000000000000000000000000"},
+		{in: float32(math.Inf(-1)), want: "-340282350000000000000000000000000000000"},
 	}
 	for _, c := range cases {
 		if got := floatToDecimal(c.in); got != c.want {
@@ -52,23 +56,11 @@ func TestFloatToDecimalKnown(t *testing.T) {
 	}
 }
 
-func TestFloatToDecimalNonFinite(t *testing.T) {
-	if got := floatToDecimal(float32(math.NaN())); got != "0" {
-		t.Errorf("NaN = %q, want %q", got, "0")
-	}
-	// +Inf serializes as the nearest finite float (FLT_MAX); -Inf as -FLT_MAX.
-	if got, want := floatToDecimal(float32(math.Inf(1))), floatToDecimal(math.MaxFloat32); got != want {
-		t.Errorf("+Inf = %q, want %q (FLT_MAX)", got, want)
-	}
-	if got, want := floatToDecimal(float32(math.Inf(-1))), floatToDecimal(-math.MaxFloat32); got != want {
-		t.Errorf("-Inf = %q, want %q (-FLT_MAX)", got, want)
-	}
-}
-
-// TestFloatToDecimalSyntax verifies the documented output grammar /[-]?([0-9]*.)?[0-9]+/: no exponent, at most one sign
-// and one dot, and always at least one digit.
-func TestFloatToDecimalSyntax(t *testing.T) {
-	check := func(s string) {
+// TestFloatToDecimalRoundTrip verifies the documented output grammar /[-]?([0-9]*.)?[0-9]+/ for every float (no
+// exponent, at most one sign and one dot, and always at least one digit), and the round-trip guarantee: parsing the
+// output as a float recovers the exact original value for every finite float.
+func TestFloatToDecimalRoundTrip(t *testing.T) {
+	checkSyntax := func(s string) {
 		if s == "" {
 			t.Fatal("empty output")
 		}
@@ -95,21 +87,12 @@ func TestFloatToDecimalSyntax(t *testing.T) {
 			t.Errorf("%q: no digits", s)
 		}
 	}
-	rng := rand.New(rand.NewSource(1))
-	for i := 0; i < 200000; i++ {
-		v := math.Float32frombits(rng.Uint32())
-		check(floatToDecimal(v))
-	}
-}
-
-// TestFloatToDecimalRoundTrip verifies the round-trip guarantee: parsing the output as a float recovers the exact
-// original value for every finite float.
-func TestFloatToDecimalRoundTrip(t *testing.T) {
 	verify := func(v float32) {
+		s := floatToDecimal(v)
+		checkSyntax(s)
 		if f64 := float64(v); math.IsNaN(f64) || math.IsInf(f64, 0) {
 			return
 		}
-		s := floatToDecimal(v)
 		parsed, err := strconv.ParseFloat(s, 32)
 		if err != nil {
 			t.Fatalf("ParseFloat(%q) from %g: %v", s, v, err)

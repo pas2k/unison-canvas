@@ -176,26 +176,6 @@ func isCoverageAAHelper(h *SimpleMeshDrawOpHelper) bool {
 	return !h.UsesMSAA() && h.AAType() == gpu.AATypeCoverage
 }
 
-func TestIsCoverageAAHelper(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		aaType gpu.AAType
-		want   bool
-	}{
-		{name: "none", aaType: gpu.AATypeNone, want: false},
-		{name: "coverage", aaType: gpu.AATypeCoverage, want: true},
-		{name: "msaa", aaType: gpu.AATypeMSAA, want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var h SimpleMeshDrawOpHelper
-			h.SetAAType(tc.aaType)
-			if got := isCoverageAAHelper(&h); got != tc.want {
-				t.Fatalf("isCoverageAAHelper(%d) = %v, want %v", tc.aaType, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestEllipseOpSelection(t *testing.T) {
 	dc := newShaderRecordingContext(t)
 	sdc := newDrawTestSDC(t, dc, 64, 64)

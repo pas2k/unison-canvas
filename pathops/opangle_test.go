@@ -325,104 +325,68 @@ func TestCalcSortAnglesQuadLine(t *testing.T) {
 	}
 }
 
-// TestCalcSortAnglesTwoOvals sorts the angles where two overlapping circles cross. Because conic arcs span many
-// sectors, the crossing angles' sector masks overlap, forcing the geometric comparison path (orderable ->
-// convexHullOverlaps/endsIntersect) that the all-distinct-sector line crossings above skip. Two circles centered 12
-// apart with radius 10 cross transversely at (6, +/-8).
-func TestCalcSortAnglesTwoOvals(t *testing.T) {
-	a := path.New().AddOval(geom.Rect{Left: -10, Top: -10, Right: 10, Bottom: 10}, geom.DirectionCW)
-	b := path.New().AddOval(geom.Rect{Left: 2, Top: -10, Right: 22, Bottom: 10}, geom.DirectionCW)
-	head, state := buildOpModel(t, a, b)
-	coincidence := newOpCoincidence(state)
-	addIntersections(head, coincidence)
-	calcAndSortAngles(t, head) // asserts sortAngles success on every conic segment
+// TestCalcSortAnglesOverlappingSectors sorts the angles at crossings whose sector masks overlap, forcing the geometric
+// comparison path (orderable -> convexHullOverlaps/endsIntersect) that the transverse line crossings above skip.
+func TestCalcSortAnglesOverlappingSectors(t *testing.T) {
+	for _, tc := range []struct {
+		a, b *path.Path
+		name string
+	}{
+		{
+			// Conic arcs span many sectors. Two circles centered 12 apart with radius 10 cross transversely at
+			// (6, +/-8); each intersection is reachable from both crossing arcs' spans.
+			name: "two ovals",
+			a:    path.New().AddOval(geom.Rect{Left: -10, Top: -10, Right: 10, Bottom: 10}, geom.DirectionCW),
+			b:    path.New().AddOval(geom.Rect{Left: 2, Top: -10, Right: 22, Bottom: 10}, geom.DirectionCW),
+		},
+		{
+			// Two nearly parallel monotonic quads leave their one crossing in similar directions. Each closed shape
+			// adds a wide triangle so the contours are non-degenerate.
+			name: "parallel quads",
+			a:    path.New().MoveTo(0, 0).QuadTo(20, 5, 40, 20).LineTo(40, 60).LineTo(0, 60).Close(),
+			b:    path.New().MoveTo(0, 4).QuadTo(20, 6, 40, 16).LineTo(40, -40).LineTo(0, -40).Close(),
+		},
+	} {
+		head, state := buildOpModel(t, tc.a, tc.b)
+		coincidence := newOpCoincidence(state)
+		addIntersections(head, coincidence)
+		calcAndSortAngles(t, head) // asserts sortAngles success
 
-	cs := realContours(head)
-	if len(cs) != 2 {
-		t.Fatalf("contour count = %d, want 2", len(cs))
-	}
-	cA, cB := cs[0], cs[1]
-	mixedCrossings := 0
-	for _, c := range cs {
-		for _, s := range segsOf(c) {
-			for base := s.head.next; base != &s.tail; base = base.upCast().next {
-				angle := base.upCast().toAngle()
-				if angle == nil {
-					angle = base.fromAngle()
-				}
-				if angle == nil {
-					continue
-				}
-				loop := angleLoop(angle)
-				fromA, fromB := false, false
-				for _, ang := range loop {
-					switch ang.segment().contour {
-					case cA:
-						fromA = true
-					case cB:
-						fromB = true
+		cs := realContours(head)
+		if len(cs) != 2 {
+			t.Fatalf("%s: contour count = %d, want 2", tc.name, len(cs))
+		}
+		cA, cB := cs[0], cs[1]
+		mixed := 0
+		for _, c := range cs {
+			for _, s := range segsOf(c) {
+				for base := s.head.next; base != &s.tail; base = base.upCast().next {
+					angle := base.upCast().toAngle()
+					if angle == nil {
+						angle = base.fromAngle()
 					}
-				}
-				if fromA && fromB && len(loop) >= 4 {
-					mixedCrossings++
+					if angle == nil {
+						continue
+					}
+					loop := angleLoop(angle)
+					fromA, fromB := false, false
+					for _, ang := range loop {
+						switch ang.segment().contour {
+						case cA:
+							fromA = true
+						case cB:
+							fromB = true
+						}
+					}
+					if fromA && fromB && len(loop) >= 4 {
+						mixed++
+					}
 				}
 			}
 		}
-	}
-	// Each of the two circle intersections is reachable from both crossing arcs' spans.
-	if mixedCrossings < 2 {
-		t.Fatalf("cross-contour angle loops (>=4 angles, both circles) = %d, want >=2", mixedCrossings)
-	}
-}
-
-// TestCalcSortAnglesParallelQuads sorts the angles where two nearly parallel monotonic quads cross. Because the two
-// arcs leave the crossing in similar directions their sector masks overlap, driving the curve/curve geometric
-// comparison (orderable -> convexHullOverlaps) that the transverse crossings above bypass. The quads share one
-// crossing; each closed shape adds a wide triangle so the contours are non-degenerate.
-func TestCalcSortAnglesParallelQuads(t *testing.T) {
-	a := path.New()
-	a.MoveTo(0, 0).QuadTo(20, 5, 40, 20).LineTo(40, 60).LineTo(0, 60).Close()
-	b := path.New()
-	b.MoveTo(0, 4).QuadTo(20, 6, 40, 16).LineTo(40, -40).LineTo(0, -40).Close()
-	head, state := buildOpModel(t, a, b)
-	coincidence := newOpCoincidence(state)
-	addIntersections(head, coincidence)
-	calcAndSortAngles(t, head) // asserts sortAngles success
-
-	cs := realContours(head)
-	if len(cs) != 2 {
-		t.Fatalf("contour count = %d, want 2", len(cs))
-	}
-	cA, cB := cs[0], cs[1]
-	mixed := 0
-	for _, c := range cs {
-		for _, s := range segsOf(c) {
-			for base := s.head.next; base != &s.tail; base = base.upCast().next {
-				angle := base.upCast().toAngle()
-				if angle == nil {
-					angle = base.fromAngle()
-				}
-				if angle == nil {
-					continue
-				}
-				loop := angleLoop(angle)
-				fromA, fromB := false, false
-				for _, ang := range loop {
-					switch ang.segment().contour {
-					case cA:
-						fromA = true
-					case cB:
-						fromB = true
-					}
-				}
-				if fromA && fromB && len(loop) >= 4 {
-					mixed++
-				}
-			}
+		if mixed < 2 {
+			t.Fatalf("%s: cross-contour angle loops (>=4 angles, both contours) = %d, want >=2", tc.name, mixed)
 		}
-	}
-	if mixed < 2 {
-		t.Fatalf("cross-contour angle loops (>=4 angles, both quads) = %d, want >=2", mixed)
 	}
 }
 

@@ -725,8 +725,8 @@ func TestResourceCacheScratchKeyConsistency(t *testing.T) {
 
 // TestResourceCacheDuplicateUniqueKey verifies that setting the same UniqueKey on a second resource evicts the first
 // resource's cache entry for that key (purging it once unreferenced), that redundantly re-setting a resource's own key
-// is a no-op, that RemoveUniqueKey drops a resource from lookup, and that a key's custom data is preserved through
-// registration and lookup.
+// is a no-op, that RemoveUniqueKey drops a resource from lookup, and that a key's custom data is absent until set and
+// preserved through registration and lookup.
 func TestResourceCacheDuplicateUniqueKey(t *testing.T) {
 	m := newMock(30000)
 	cache := m.cache
@@ -803,6 +803,7 @@ func TestResourceCacheDuplicateUniqueKey(t *testing.T) {
 	}
 	var key3 UniqueKey
 	makeUniqueKey(&key3, 0)
+	check(t, key3.CustomData() == nil, "unset custom data = %v", key3.CustomData())
 	d2 := cache.FindAndRefUniqueResource(&key3)
 	if d2 == nil {
 		t.Fatal("find by fresh key failed")
@@ -1080,21 +1081,6 @@ func TestResourceCachePartialPurge(t *testing.T) {
 			check(t, cache.PurgeableBytes() == 0, "purgeable = %d", cache.PurgeableBytes())
 		})
 	}
-}
-
-// TestResourceCacheCustomData verifies that UniqueKey custom data round-trips through SetCustomData/CustomData and is
-// preserved when a key is copied by value.
-func TestResourceCacheCustomData(t *testing.T) {
-	var key1, key2 UniqueKey
-	makeUniqueKey(&key1, 1)
-	makeUniqueKey(&key2, 2)
-	key1.SetCustomData([]byte{4, 1, 3, 2})
-	check(t, len(key1.CustomData()) == 4, "custom data missing")
-	check(t, key2.CustomData() == nil, "unexpected custom data")
-
-	// Copying a key preserves its custom data.
-	key3 := key1
-	check(t, len(key3.CustomData()) == 4, "copied custom data missing")
 }
 
 // TestResourceCacheAbandoned verifies that AbandonAll destroys a resource and that every public Resource method remains

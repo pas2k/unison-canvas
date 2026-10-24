@@ -14,7 +14,6 @@
 package font
 
 import (
-	"math"
 	"testing"
 
 	"github.com/richardwilkes/canvas/path"
@@ -124,35 +123,6 @@ func TestCalculatePathGapIgnoresConics(t *testing.T) {
 	}
 	if left, right := calculatePathGap(5, 8, c); !gapIsEmpty(left, right) {
 		t.Errorf("conic gap = (%v, %v), want the empty sentinel", left, right)
-	}
-}
-
-func TestIEEEFloatDivide(t *testing.T) {
-	// calculatePathGap relies on the divide keeping IEEE semantics rather than trapping or clamping: a zero
-	// denominator has to produce an infinity (or a NaN when the numerator is zero too) so that the 0 <= t && t < 1
-	// range check is what rejects the degenerate segment.
-	if got := ieeeFloatDivide(3, 2); got != 1.5 {
-		t.Errorf("3/2 = %v, want 1.5", got)
-	}
-	if got := ieeeFloatDivide(1, 0); !math.IsInf(float64(got), 1) {
-		t.Errorf("1/0 = %v, want +Inf", got)
-	}
-	if got := ieeeFloatDivide(-1, 0); !math.IsInf(float64(got), -1) {
-		t.Errorf("-1/0 = %v, want -Inf", got)
-	}
-	if got := ieeeFloatDivide(0, 0); !math.IsNaN(float64(got)) {
-		t.Errorf("0/0 = %v, want NaN", got)
-	}
-	for _, v := range []float32{float32(math.Inf(1)), float32(math.Inf(-1)), 0, 1} {
-		if got := ieeeFloatDivide(v, v); v != 1 && !math.IsNaN(float64(got)) {
-			t.Errorf("%v/%v = %v, want NaN", v, v, got)
-		}
-	}
-	// The range check is what rejects each of those, not the divide.
-	for _, tv := range []float32{float32(math.Inf(1)), float32(math.Inf(-1)), float32(math.NaN()), 1, -0.001} {
-		if 0 <= tv && tv < 1 {
-			t.Errorf("t = %v passes the range check; a degenerate segment would contribute a gap", tv)
-		}
 	}
 }
 

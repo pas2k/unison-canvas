@@ -46,25 +46,41 @@ func pixelAt(pix *raster.Pixmap, x, y int32) [4]byte {
 const emojiUTF8 = "\U0001F600"
 
 func TestDrawColorEmojiSprite(t *testing.T) {
-	for _, name := range []string{"sbix.ttf", "cbdt.ttf", "colr.ttf"} {
-		f := loadEmojiFont(t, name, 64)
+	// The face center is the opaque (255, 204, 0) color, not the black an A8 mask would produce.
+	face := [4]byte{255, 204, 0, 255}
+	for _, tc := range []struct {
+		name   string
+		alpha  uint8
+		lo, hi [4]byte // inclusive per-channel range of the face center
+	}{
+		{name: "sbix.ttf", alpha: 255, lo: face, hi: face},
+		{name: "cbdt.ttf", alpha: 255, lo: face, hi: face},
+		{name: "colr.ttf", alpha: 255, lo: face, hi: face},
+		// drawSprite applies the paint alpha to color glyphs: half of (255, 204, 0) over white is roughly
+		// (255, 229, 127).
+		{name: "sbix.ttf", alpha: 128, lo: [4]byte{255, 220, 115, 0}, hi: [4]byte{255, 240, 140, 255}},
+	} {
+		f := loadEmojiFont(t, tc.name, 64)
 		c, pix := newTextCanvas(80, 80)
 		paint := NewPaint()
 		paint.AntiAlias = true
+		paint.Color = paint.Color.WithAlpha(tc.alpha)
 		c.DrawSimpleText([]byte(emojiUTF8), font.TextEncodingUTF8, 10, 66, f, paint)
 
 		ink := inkBounds(pix)
 		if ink.IsEmpty() {
-			t.Fatalf("%s: no ink", name)
+			t.Fatalf("%s alpha %d: no ink", tc.name, tc.alpha)
 		}
 		// The glyph occupies roughly [10, 66-52 .. 62, 66] (colr's shape is inset within its em box).
 		if ink.Left < 9 || ink.Top < 12 || ink.Right > 64 || ink.Bottom > 67 {
-			t.Errorf("%s: ink %v outside expected box", name, ink)
+			t.Errorf("%s alpha %d: ink %v outside expected box", tc.name, tc.alpha, ink)
 		}
-		// The face center is the opaque (255, 204, 0) color, not the black an A8 mask would produce.
 		center := pixelAt(pix, (ink.Left+ink.Right)/2, (ink.Top+ink.Bottom)/2)
-		if center != [4]byte{255, 204, 0, 255} {
-			t.Errorf("%s: center %v, want {255 204 0 255}", name, center)
+		for i := range center {
+			if center[i] < tc.lo[i] || center[i] > tc.hi[i] {
+				t.Errorf("%s alpha %d: center %v, want within %v..%v", tc.name, tc.alpha, center, tc.lo, tc.hi)
+				break
+			}
 		}
 	}
 }
@@ -158,24 +174,5 @@ func TestDrawColorEmojiBlur(t *testing.T) {
 		if buf[i] == 255 && buf[i+1] == 204 && buf[i+2] == 0 {
 			t.Fatal("found face-colored pixel; blur must not draw the color image")
 		}
-	}
-}
-
-func TestDrawColorEmojiPaintAlpha(t *testing.T) {
-	// drawSprite applies the paint alpha to color glyphs.
-	f := loadEmojiFont(t, "sbix.ttf", 64)
-	c, pix := newTextCanvas(80, 80)
-	paint := NewPaint()
-	paint.Color = paint.Color.WithAlpha(128)
-	c.DrawSimpleText([]byte(emojiUTF8), font.TextEncodingUTF8, 10, 66, f, paint)
-
-	ink := inkBounds(pix)
-	if ink.IsEmpty() {
-		t.Fatal("no ink")
-	}
-	center := pixelAt(pix, (ink.Left+ink.Right)/2, (ink.Top+ink.Bottom)/2)
-	// Half of (255, 204, 0) over white: roughly (255, 229, 127).
-	if center[0] != 255 || center[1] < 220 || center[1] > 240 || center[2] < 115 || center[2] > 140 {
-		t.Errorf("center %v, want half-alpha face over white", center)
 	}
 }

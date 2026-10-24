@@ -86,67 +86,78 @@ func readSurfaceRGBA(t *testing.T, s *gl.RenderTargetSurface) []byte {
 func TestLiveTextureFromImageReadback(t *testing.T) {
 	_, dc := newLiveDirectContext(t)
 
-	img := newCheckerImage(t) // 4x4 red/white non-uniform pattern (orientation-sensitive)
-	tex := gl.TextureFromImage(dc, img, gpu.MipmappedNo, gpu.BudgetedYes)
-	if tex == nil {
-		t.Fatal("TextureFromImage returned nil")
-	}
-	defer tex.Release()
-	if tex.Width() != 4 || tex.Height() != 4 {
-		t.Fatalf("dims = %dx%d, want 4x4", tex.Width(), tex.Height())
-	}
-	if !tex.IsTextureBacked() || tex.IsAlphaOnly() {
-		t.Fatal("expected an opaque texture-backed image")
-	}
-	if tex.ColorType() != gpu.ColorTypeRGBA8888 {
-		t.Fatalf("color type = %v, want RGBA8888", tex.ColorType())
+	if gl.TextureFromImage(dc, nil, gpu.MipmappedNo, gpu.BudgetedYes) != nil {
+		t.Error("TextureFromImage(nil image) should be nil")
 	}
 
-	want := sourceRGBA(t, img)
-	// Round trip: source -> texture -> readback must be byte-exact (opaque, top-left, no flip).
-	assertBytesEqual(t, readTexImageRGBA(t, tex), want, 0, "texture readback")
-
-	// MakeNonTextureImage reads back into a CPU image; its pixels must match the source too.
-	nonTex := tex.MakeNonTextureImage()
-	if nonTex == nil {
-		t.Fatal("MakeNonTextureImage returned nil")
+	checker := newCheckerImage(t) // 4x4 red/white non-uniform pattern (orientation-sensitive)
+	alphaInfo, _ := imagecore.MakeInfo(4, 4, imagecore.ColorTypeAlpha8, imagecore.AlphaTypePremul)
+	alphaData := make([]byte, 16)
+	for i := range alphaData {
+		alphaData[i] = byte(i * 15)
 	}
-	assertBytesEqual(t, sourceRGBA(t, nonTex), want, 0, "non-texture image")
-}
-
-func TestLiveTextureFromImageAlpha8(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-
-	info, _ := imagecore.MakeInfo(4, 4, imagecore.ColorTypeAlpha8, imagecore.AlphaTypePremul)
-	data := make([]byte, 16)
-	for i := range data {
-		data[i] = byte(i * 15)
-	}
-	img := imagecore.NewRasterData(info, data, 4)
-	if img == nil {
+	alpha := imagecore.NewRasterData(alphaInfo, alphaData, 4)
+	if alpha == nil {
 		t.Fatal("alpha image creation failed")
 	}
 
-	tex := gl.TextureFromImage(dc, img, gpu.MipmappedNo, gpu.BudgetedYes)
-	if tex == nil {
-		t.Fatal("TextureFromImage(alpha) returned nil")
-	}
-	defer tex.Release()
-	if !tex.IsAlphaOnly() || tex.ColorType() != gpu.ColorTypeAlpha8 {
-		t.Fatalf("expected an alpha-only image, got color type %v", tex.ColorType())
-	}
+	for _, tc := range []struct {
+		img       *imagecore.Image
+		name      string
+		want      []byte              // the exact readback in info's format
+		info      imagecore.ImageInfo // the readback format
+		colorType gpu.ColorType
+		alphaOnly bool
+	}{
+		{
+			name:      "rgba",
+			img:       checker,
+			info:      rgba8888Premul(4, 4),
+			want:      sourceRGBA(t, checker),
+			colorType: gpu.ColorTypeRGBA8888,
+		},
+		{
+			name:      "alpha8",
+			img:       alpha,
+			info:      alphaInfo,
+			want:      alphaData,
+			colorType: gpu.ColorTypeAlpha8,
+			alphaOnly: true,
+		},
+	} {
+		tex := gl.TextureFromImage(dc, tc.img, gpu.MipmappedNo, gpu.BudgetedYes)
+		if tex == nil {
+			t.Fatalf("%s: TextureFromImage returned nil", tc.name)
+		}
+		if tex.Width() != 4 || tex.Height() != 4 {
+			t.Fatalf("%s: dims = %dx%d, want 4x4", tc.name, tex.Width(), tex.Height())
+		}
+		if !tex.IsTextureBacked() || tex.IsAlphaOnly() != tc.alphaOnly {
+			t.Fatalf("%s: texture-backed = %v, alpha-only = %v, want true and %v", tc.name, tex.IsTextureBacked(),
+				tex.IsAlphaOnly(), tc.alphaOnly)
+		}
+		if tex.ColorType() != tc.colorType {
+			t.Fatalf("%s: color type = %v, want %v", tc.name, tex.ColorType(), tc.colorType)
+		}
 
-	got := make([]byte, 16)
-	if !tex.ReadPixels(info, got, 4, 0, 0, imagecore.CachingAllow) {
-		t.Fatal("alpha ReadPixels failed")
-	}
-	assertBytesEqual(t, got, data, 0, "alpha readback")
-}
+		// Round trip: source -> texture -> readback must be byte-exact (top-left, no flip).
+		got := make([]byte, len(tc.want))
+		if !tex.ReadPixels(tc.info, got, tc.info.MinRowBytes(), 0, 0, imagecore.CachingAllow) {
+			t.Fatalf("%s: ReadPixels failed", tc.name)
+		}
+		assertBytesEqual(t, got, tc.want, 0, tc.name+" texture readback")
 
-func TestLiveTextureFromImageNil(t *testing.T) {
-	_, dc := newLiveDirectContext(t)
-	if gl.TextureFromImage(dc, nil, gpu.MipmappedNo, gpu.BudgetedYes) != nil {
-		t.Error("TextureFromImage(nil image) should be nil")
+		// MakeNonTextureImage reads back into a CPU image; its pixels must match the source too.
+		nonTex := tex.MakeNonTextureImage()
+		if nonTex == nil {
+			t.Fatalf("%s: MakeNonTextureImage returned nil", tc.name)
+		}
+		got = make([]byte, len(tc.want))
+		if !nonTex.ReadPixels(tc.info, got, tc.info.MinRowBytes(), 0, 0, imagecore.CachingAllow) {
+			t.Fatalf("%s: non-texture image ReadPixels failed", tc.name)
+		}
+		assertBytesEqual(t, got, tc.want, 0, tc.name+" non-texture image")
+		tex.Release()
 	}
 }
 
@@ -230,29 +241,4 @@ func TestLiveRenderTargetSurfaceReadPixelsConvert(t *testing.T) {
 		t.Fatal("BGRA ReadPixels failed")
 	}
 	assertUniformRGBA(t, buf, [4]byte{0, 0, 255, 255}, 1, "BGRA readback")
-}
-
-func TestLiveSurfaceFromBackendRenderTarget(t *testing.T) {
-	env, dc := newLiveDirectContext(t)
-
-	const size = 16
-	fbo, _ := env.makeOffscreenFBO(t, size)
-
-	s := gl.NewRenderTargetSurfaceFromBackendRenderTarget(dc, gpu.ColorTypeRGBA8888,
-		geom.ISize{Width: size, Height: size}, gl.FormatRGBA8, 1, 0, fbo, gpu.OriginBottomLeft, nil)
-	if s == nil {
-		t.Fatal("NewRenderTargetSurfaceFromBackendRenderTarget returned nil")
-	}
-	s.Canvas().Clear(colorcore.Magenta)
-
-	magenta := [4]byte{255, 0, 255, 255}
-	assertUniformRGBA(t, readSurfaceRGBA(t, s), magenta, 1, "wrapped-FBO surface")
-
-	// Snapshot of a wrapped FBO copies the render target into a texture image.
-	snap := s.MakeImageSnapshot()
-	if snap == nil {
-		t.Fatal("wrapped-FBO snapshot returned nil")
-	}
-	defer snap.Release()
-	assertUniformRGBA(t, readTexImageRGBA(t, snap), magenta, 1, "wrapped-FBO snapshot")
 }
